@@ -30,7 +30,7 @@ Open the site, hit the **⚙ Settings** button and paste your [The Odds API key]
 
 ## What's inside
 
-- **Sportsbook** — real events & odds (h2h, spreads, totals) from 50+ bookmakers via The Odds API; best-price aggregation; bet slip with live odds; early **cash-out**; one-click **settle results** (auto-settles your open bets when games finish, handles pushes/refunds).
+- **Sportsbook** — real events & odds (h2h, spreads, totals) from 50+ bookmakers via The Odds API; best-price aggregation; **multi-selection bet slip with parlays** (up to 10 legs, combined odds, reduced-on-push settlement); **live scores** (90s polling, LIVE badges, auto-settle the moment a game finishes); early **cash-out** at fair value (live-odds based, margin included); one-click **settle results** (handles wins, losses, pushes/refunds).
 - **Casino** — Coin Flip, Roulette, Dice Roll, Plinko, Lucky Slots, Mines, Sky Crash, Towers. Every round is a real ledger entry.
 - **Wallet & ledger** — balance with animated count-up, deposits, withdrawals (requests), bet history with status chips (OPEN / WON / LOST / CASHED).
 - **Sound engine** (`src/lib/sound.ts`) — 25+ synthesized Web Audio effects: coin flips, wheel clicks, reel stops, win fanfares, jackpot, explosions, cash-out chimes. No audio files needed. Mutable with the 🔊 toggle (persisted).

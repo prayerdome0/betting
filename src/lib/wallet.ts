@@ -11,18 +11,31 @@ import { bestPrice } from "./odds";
 
 export type BetStatus = "open" | "won" | "lost" | "cashed";
 
+/** One leg of a parlay (accumulator) bet. */
+export type ParlayLeg = {
+  eventId: string;
+  sportKey: string;
+  market: string; // h2h | spreads | totals
+  outcome: string;
+  point?: number;
+  odds: number;
+  eventLabel: string; // "Arsenal vs Chelsea"
+  commenceTime?: number;
+};
+
 export type Bet = {
   id: string;
   kind: "sports" | "casino";
-  game: string; // sport title for sports bets, game title for casino
+  game: string; // sport title for sports bets, "Parlay" for accumulators, game title for casino
   label: string; // outcome or round description
   eventId?: string;
   sportKey?: string;
   commenceTime?: number;
-  market?: string; // h2h | spreads | totals (sports bets)
-  outcome?: string; // outcome/team name (sports bets)
+  market?: string; // h2h | spreads | totals (single sports bets)
+  outcome?: string; // outcome/team name (single sports bets)
   point?: number; // spread/total line
-  odds: number;
+  legs?: ParlayLeg[]; // present for parlay bets
+  odds: number; // combined odds for parlays
   stake: number;
   payout: number; // 0 until settled
   status: BetStatus;
@@ -102,14 +115,78 @@ export function settleBet(wallet: Wallet, id: string, won: boolean): Wallet {
   return next;
 }
 
-/** Cash out an open bet early at the current odds (discounted). */
-export function cashOutBet(wallet: Wallet, id: string, currentOdds: number): Wallet | null {
+export function combinedOdds(legs: ParlayLeg[]): number {
+  return Math.round(legs.reduce((product, leg) => product * leg.odds, 1) * 100) / 100;
+}
+
+/** Open a parlay: deduct stake once, combined odds = product of legs. */
+export function openParlay(
+  wallet: Wallet,
+  partial: Omit<Bet, "id" | "payout" | "status" | "createdAt" | "odds" | "kind"> & { legs: ParlayLeg[] }
+): { wallet: Wallet; bet: Bet } {
+  const next = cloneWallet(wallet);
+  const bet: Bet = {
+    ...partial,
+    kind: "sports",
+    odds: combinedOdds(partial.legs),
+    id: uid(),
+    payout: 0,
+    status: "open",
+    createdAt: Date.now(),
+  };
+  next.bets = [bet, ...next.bets];
+  next.balance = Math.round((next.balance - bet.stake) * 100) / 100;
+  return { wallet: next, bet };
+}
+
+/**
+ * Settle a parlay from per-leg results.
+ * - any loss → the parlay loses
+ * - all legs push → stake refunded
+ * - otherwise → won with the reduced combined odds (pushed legs drop out)
+ */
+export function settleParlay(wallet: Wallet, id: string, results: ("win" | "loss" | "push")[]): Wallet {
+  const next = cloneWallet(wallet);
+  const bet = next.bets.find((b) => b.id === id);
+  if (!bet || bet.status !== "open" || !bet.legs) return wallet;
+  if (bet.legs.length !== results.length) return wallet;
+
+  const losses = results.filter((r) => r === "loss").length;
+  if (losses > 0) {
+    bet.status = "lost";
+    bet.payout = 0;
+    return next;
+  }
+  const pushes = results.filter((r) => r === "push").length;
+  if (pushes === results.length) {
+    bet.status = "cashed";
+    bet.payout = bet.stake;
+    next.balance = Math.round((next.balance + bet.payout) * 100) / 100;
+    return next;
+  }
+  let multiplier = 1;
+  results.forEach((result, index) => {
+    if (result === "win" && bet.legs) multiplier *= bet.legs[index].odds;
+  });
+  bet.status = "won";
+  bet.payout = Math.round(bet.stake * multiplier * 100) / 100;
+  next.balance = Math.round((next.balance + bet.payout) * 100) / 100;
+  return next;
+}
+
+/**
+ * Cash out an open bet for an explicit cash value (fair value computed by
+ * the caller from live odds, with margin). Capped at the max win, floored
+ * at $0.01 so a losing-looking position can still be cashed out cheaply.
+ */
+export function cashOutBet(wallet: Wallet, id: string, cashValue: number): Wallet | null {
   const next = cloneWallet(wallet);
   const bet = next.bets.find((b) => b.id === id);
   if (!bet || bet.status !== "open") return null;
-  const cashOdds = Math.max(1, Math.round(currentOdds * 0.8 * 100) / 100);
+  const maxWin = Math.round(bet.stake * bet.odds * 100) / 100;
+  const payout = Math.min(Math.max(cashValue, 0.01), maxWin);
   bet.status = "cashed";
-  bet.payout = Math.round(bet.stake * cashOdds * 100) / 100;
+  bet.payout = Math.round(payout * 100) / 100;
   next.balance = Math.round((next.balance + bet.payout) * 100) / 100;
   return next;
 }

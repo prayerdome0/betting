@@ -634,7 +634,10 @@ export default function BettingApp() {
             totalReturned={totalReturned}
             onReset={resetDemo}
             onCashOut={(bet) => {
-              const next = cashOutBet(wallet, bet.id, bet.odds);
+              // Conservative estimate without live odds — real-time value is
+              // shown on the Sportsbook tab where current prices are known.
+              const estimate = Math.round(Math.min(bet.stake, bet.stake * bet.odds * 0.8) * 100) / 100;
+              const next = cashOutBet(wallet, bet.id, estimate);
               if (next) {
                 setWallet(next);
                 const cashed = next.bets.find((b) => b.id === bet.id);
@@ -959,7 +962,7 @@ function BetsLedger({
                     <td className="py-3.5 text-right">
                       {bet.status === "open" && bet.kind === "sports" ? (
                         <button onClick={() => onCashOut(bet)} className="rounded-lg bg-emerald-400/10 px-2.5 py-1 text-[10px] font-black text-emerald-300 transition hover:bg-emerald-400/25">
-                          CASH OUT {currency.format(Math.max(bet.stake, Math.round(bet.stake * bet.odds * 0.8 * 100) / 100))}
+                          CASH OUT {currency.format(Math.min(bet.stake, Math.round(bet.stake * bet.odds * 0.8 * 100) / 100))}
                         </button>
                       ) : (
                         <span className="text-[10px] text-slate-600">—</span>

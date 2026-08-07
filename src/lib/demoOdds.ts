@@ -42,22 +42,26 @@ const FIXTURES: FixtureDef[] = [
   { id: "za4", sport: "soccer_zambia", home: "Red Arrows", away: "Mufulira Wanderers", offset: 31, odds: [1.8, 3.4, 4.2] },
   { id: "za5", sport: "soccer_zambia", home: "Kabwe Warriors", away: "Prison Leopards", offset: -3, odds: [2.3, 3.0, 3.1], done: true, homeScore: 2, awayScore: 1 },
   { id: "za6", sport: "soccer_zambia", home: "Nkwazi", away: "Green Eagles", offset: -5, odds: [2.75, 2.9, 2.6], done: true, homeScore: 0, awayScore: 2 },
+  { id: "za7", sport: "soccer_zambia", home: "Nchanga Rangers", away: "Lumwana Radiants", offset: -0.8, odds: [2.4, 3.0, 2.9], homeScore: 1, awayScore: 0 },
   // EPL
   { id: "ep1", sport: "soccer_epl", home: "Arsenal", away: "Chelsea", offset: 6, odds: [2.15, 3.4, 3.2] },
   { id: "ep2", sport: "soccer_epl", home: "Liverpool", away: "Man City", offset: 14, odds: [2.6, 3.4, 2.55] },
   { id: "ep3", sport: "soccer_epl", home: "Man United", away: "Tottenham", offset: 26, odds: [2.3, 3.5, 2.95] },
   { id: "ep4", sport: "soccer_epl", home: "Newcastle", away: "Aston Villa", offset: 50, odds: [2.05, 3.45, 3.4] },
   { id: "ep5", sport: "soccer_epl", home: "Everton", away: "Fulham", offset: -4, odds: [2.6, 3.1, 2.75], done: true, homeScore: 1, awayScore: 1 },
+  { id: "ep6", sport: "soccer_epl", home: "Brighton", away: "West Ham", offset: -1.2, odds: [2.2, 3.3, 3.1], homeScore: 2, awayScore: 1 },
   // NBA
   { id: "nb1", sport: "basketball_nba", home: "Lakers", away: "Celtics", offset: 8, odds: [2.05, undefined, 1.8] },
   { id: "nb2", sport: "basketball_nba", home: "Warriors", away: "Suns", offset: 12, odds: [1.95, undefined, 1.88] },
   { id: "nb3", sport: "basketball_nba", home: "Bucks", away: "Nuggets", offset: 30, odds: [2.3, undefined, 1.63] },
   { id: "nb4", sport: "basketball_nba", home: "Knicks", away: "Heat", offset: -6, odds: [1.75, undefined, 2.1], done: true, homeScore: 112, awayScore: 107 },
+  { id: "nb5", sport: "basketball_nba", home: "Mavericks", away: "Thunder", offset: -0.5, odds: [1.9, undefined, 1.9], homeScore: 78, awayScore: 74 },
   // NFL
   { id: "nf1", sport: "americanfootball_nfl", home: "Chiefs", away: "Bills", offset: 18, odds: [1.85, undefined, 1.98] },
   { id: "nf2", sport: "americanfootball_nfl", home: "Eagles", away: "Cowboys", offset: 22, odds: [1.72, undefined, 2.15] },
   { id: "nf3", sport: "americanfootball_nfl", home: "49ers", away: "Rams", offset: 44, odds: [1.9, undefined, 1.92] },
   { id: "nf4", sport: "americanfootball_nfl", home: "Lions", away: "Packers", offset: -2, odds: [1.66, undefined, 2.25], done: true, homeScore: 27, awayScore: 24 },
+  { id: "nf5", sport: "americanfootball_nfl", home: "Steelers", away: "Bengals", offset: -1.5, odds: [1.8, undefined, 2.05], homeScore: 17, awayScore: 14 },
   // Tennis
   { id: "te1", sport: "tennis_atp", home: "Sinner", away: "Alcaraz", offset: 5, odds: [1.65, undefined, 2.25] },
   { id: "te2", sport: "tennis_atp", home: "Djokovic", away: "Zverev", offset: 16, odds: [1.8, undefined, 2.05] },
@@ -126,6 +130,7 @@ export function demoOdds(sportKey: string) {
       });
     }
 
+    const hasScores = fix.homeScore !== undefined && fix.awayScore !== undefined;
     return {
       id: fix.id,
       sport_key: sportKey,
@@ -134,7 +139,7 @@ export function demoOdds(sportKey: string) {
       home_team: fix.home,
       away_team: fix.away,
       completed: fix.done,
-      scores: fix.done
+      scores: hasScores
         ? [
             { name: fix.home, score: String(fix.homeScore) },
             { name: fix.away, score: String(fix.awayScore) },
