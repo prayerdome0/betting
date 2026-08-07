@@ -29,3 +29,6 @@ next-env.d.ts
 
 # drizzle
 drizzle/
+
+# webhook event store (local dev)
+data/

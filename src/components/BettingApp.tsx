@@ -33,9 +33,47 @@ export default function BettingApp() {
   const [keyVisible, setKeyVisible] = useState(false);
   const [keyTest, setKeyTest] = useState<string | null>(null);
   const [depositAmount, setDepositAmount] = useState("100");
+  const [depositMethod, setDepositMethod] = useState<"momo" | "card">("momo");
+  const [phone, setPhone] = useState("");
+  const [depositPhase, setDepositPhase] = useState<"idle" | "requesting" | "pending">("idle");
   const [withdrawAmount, setWithdrawAmount] = useState("50");
   const [depositBusy, setDepositBusy] = useState(false);
   const checkedSession = useRef(false);
+  const walletRef = useRef(wallet);
+  const [pendingPayment, setPendingPayment] = useState<{ reference: string; paymentId: string | null; amount: number } | null>(null);
+
+  useEffect(() => {
+    walletRef.current = wallet;
+  }, [wallet]);
+
+  /* ---------------- payment helpers ---------------- */
+
+  function normalizePhoneClient(raw: string): string | null {
+    let p = raw.replace(/[\s-]/g, "");
+    if (p.startsWith("+260")) p = "0" + p.slice(4);
+    else if (p.startsWith("260")) p = "0" + p.slice(3);
+    return /^09\d{8}$/.test(p) ? p : null;
+  }
+
+  function loadPaidRefs(): string[] {
+    try {
+      return JSON.parse(localStorage.getItem("xacheus-paid-refs") ?? "[]") as string[];
+    } catch {
+      return [];
+    }
+  }
+
+  function storePaidRef(ref: string) {
+    try {
+      const list = loadPaidRefs();
+      if (!list.includes(ref)) {
+        list.push(ref);
+        localStorage.setItem("xacheus-paid-refs", JSON.stringify(list.slice(-50)));
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 
   /* ---------------- persistence & session restore ---------------- */
 
@@ -139,6 +177,44 @@ export default function BettingApp() {
     return () => window.clearTimeout(t);
   }, [banner]);
 
+  /** Credit the wallet once per confirmed payment reference. */
+  function markPaid(method: string, amount: number, reference: string, note: string): boolean {
+    if (loadPaidRefs().includes(reference)) return false;
+    const w = depositWallet(walletRef.current, amount, method, note);
+    setWallet(w);
+    storePaidRef(reference);
+    setDepositPhase("idle");
+    setPendingPayment(null);
+    sfx.deposit();
+    showToast(`${currency.format(amount)} added to your balance.`);
+    return true;
+  }
+
+  // Poll the payment status while a Mobile Money deposit is pending —
+  // keeps running even if the modal is closed, credits when confirmed.
+  useEffect(() => {
+    if (depositPhase !== "pending" || !pendingPayment) return;
+    const poll = () => {
+      const p = pendingPayment;
+      if (!p) return;
+      fetch(`/api/deposit/status?reference=${encodeURIComponent(p.reference)}&paymentId=${encodeURIComponent(p.paymentId ?? "")}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.confirmed) {
+            markPaid("Mobile Money (OnTech)", p.amount, p.reference, `OnTech ${p.reference}`);
+            setDepositOpen(false);
+          }
+        })
+        .catch(() => {
+          /* transient — keep polling */
+        });
+    };
+    const id = window.setInterval(poll, 3000);
+    poll();
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [depositPhase, pendingPayment]);
+
   /* ---------------- actions ---------------- */
 
   function openTab(next: Tab) {
@@ -146,7 +222,7 @@ export default function BettingApp() {
     setTab(next);
   }
 
-  function placeDeposit() {
+  function placeCardDeposit() {
     const amount = Math.max(5, toNumber(depositAmount));
     if (!amount) return;
     setDepositBusy(true);
@@ -163,11 +239,7 @@ export default function BettingApp() {
           return;
         }
         if (data?.sandbox) {
-          const w = depositWallet(loadWallet(), amount, "Sandbox deposit", data.note);
-          saveWallet(w);
-          setWallet(w);
-          sfx.deposit();
-          showToast(`${currency.format(amount)} added (sandbox — set STRIPE_SECRET_KEY for real cards).`);
+          markPaid("Card (sandbox)", amount, `sandbox-${Date.now()}`, data.note ?? "Sandbox card deposit");
           setDepositOpen(false);
         } else if (data?.url) {
           window.location.href = data.url;
@@ -178,6 +250,59 @@ export default function BettingApp() {
         showToast("Deposit service unreachable.");
       })
       .finally(() => setDepositBusy(false));
+  }
+
+  function placeMobileMoneyDeposit() {
+    const amount = Math.max(5, toNumber(depositAmount));
+    if (amount < 5) {
+      sfx.error();
+      showToast("Minimum deposit is $5.");
+      return;
+    }
+    const normalized = normalizePhoneClient(phone);
+    if (!normalized) {
+      sfx.error();
+      showToast("Enter a valid Zambian mobile number (e.g. 0976123456).");
+      return;
+    }
+    setDepositPhase("requesting");
+    fetch("/api/deposit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount, phone: normalized }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.error) {
+          sfx.error();
+          showToast(data.error);
+          setDepositPhase("idle");
+          return;
+        }
+        if (data?.confirmed) {
+          const method = data.sandbox ? "Mobile Money (sandbox)" : "Mobile Money (OnTech)";
+          const note = data.sandbox
+            ? `Gateway ${data.gatewayError ?? "unavailable"} — sandbox credit (${normalized})`
+            : `OnTech ${data.reference} · ${normalized}`;
+          const paid = markPaid(method, amount, data.reference, note);
+          if (paid) setDepositOpen(false);
+          return;
+        }
+        setPendingPayment({ reference: data.reference, paymentId: data.paymentId ?? null, amount });
+        setDepositPhase("pending");
+        sfx.chip();
+      })
+      .catch(() => {
+        sfx.error();
+        showToast("Deposit service unreachable.");
+        setDepositPhase("idle");
+      });
+  }
+
+  function startDeposit() {
+    sfx.click();
+    if (depositMethod === "momo") placeMobileMoneyDeposit();
+    else placeCardDeposit();
   }
 
   function doWithdraw() {
@@ -458,6 +583,22 @@ export default function BettingApp() {
       {depositOpen && (
         <Modal title="Deposit funds" onClose={() => setDepositOpen(false)}>
           <div className="space-y-4">
+            {/* Method tabs */}
+            <div className="grid grid-cols-2 gap-2 rounded-xl bg-[#070b16] p-1">
+              {([
+                ["momo", "📱 Mobile Money"],
+                ["card", "💳 Card"],
+              ] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  onClick={() => { sfx.click(); setDepositMethod(id); }}
+                  className={`rounded-lg py-2 text-[11px] font-black transition ${depositMethod === id ? "bg-amber-300 text-slate-950 shadow-lg" : "text-slate-400 hover:text-white"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             <div className="grid grid-cols-5 gap-2">
               {[25, 50, 100, 250, 500].map((value) => (
                 <button
@@ -475,14 +616,55 @@ export default function BettingApp() {
                 value={depositAmount}
                 onChange={(e) => setDepositAmount(e.target.value)}
                 inputMode="decimal"
-                className="min-w-0 flex-1 bg-transparent py-2 text-base font-bold text-white outline-none"
+                disabled={depositPhase !== "idle"}
+                className="min-w-0 flex-1 bg-transparent py-2 text-base font-bold text-white outline-none disabled:opacity-50"
               />
             </div>
-            <button onClick={placeDeposit} disabled={depositBusy} className="w-full rounded-xl bg-gradient-to-r from-amber-300 to-rose-400 px-4 py-3 text-sm font-black text-slate-950 shadow-lg shadow-rose-500/20 transition hover:brightness-110 disabled:opacity-60">
-              {depositBusy ? "CONTACTING PAYMENTS…" : `DEPOSIT ${currency.format(Math.max(5, toNumber(depositAmount)))}`}
+
+            {depositMethod === "momo" && (
+              <div>
+                <label htmlFor="momo-phone" className="mb-1.5 block text-[10px] font-black tracking-[0.14em] text-slate-500">MOBILE MONEY NUMBER (MTN · AIRTEL · ZAMTEL)</label>
+                <div className="flex rounded-xl border border-white/[0.1] bg-[#070b16] p-1 focus-within:border-amber-300/50">
+                  <span className="grid w-10 place-items-center text-[10px] font-black text-slate-500">+260</span>
+                  <input
+                    id="momo-phone"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    inputMode="tel"
+                    placeholder="976123456"
+                    disabled={depositPhase !== "idle"}
+                    className="min-w-0 flex-1 bg-transparent py-2 text-sm font-bold text-white outline-none disabled:opacity-50"
+                  />
+                </div>
+                <p className="mt-1.5 text-[10px] text-slate-600">A payment request will be pushed to this number — approve it on your phone.</p>
+              </div>
+            )}
+
+            {depositPhase === "pending" && pendingPayment && (
+              <div className="rounded-2xl border border-amber-300/25 bg-amber-300/[0.07] p-4">
+                <div className="flex items-center gap-3">
+                  <span className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-amber-300/30 border-t-amber-300" />
+                  <div>
+                    <p className="text-xs font-black text-amber-100">Waiting for payment confirmation…</p>
+                    <p className="mt-0.5 text-[10px] leading-4 text-amber-100/70">
+                      Ref <b>{pendingPayment.reference}</b> · approve the push on your phone. Balance credits automatically.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={startDeposit}
+              disabled={depositPhase !== "idle" || depositBusy}
+              className="w-full rounded-xl bg-gradient-to-r from-amber-300 to-rose-400 px-4 py-3 text-sm font-black text-slate-950 shadow-lg shadow-rose-500/20 transition hover:brightness-110 disabled:opacity-60"
+            >
+              {depositPhase === "requesting" ? "CONTACTING PAYMENTS…" : depositPhase === "pending" ? "WAITING FOR CONFIRMATION…" : `DEPOSIT ${currency.format(Math.max(5, toNumber(depositAmount)))}`}
             </button>
             <p className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-[10px] leading-4 text-slate-500">
-              {depositBusy ? "" : "Card payments go through Stripe Checkout when STRIPE_SECRET_KEY is set. Without it, deposits are sandboxed (instant credit, no real charge). Minimum deposit $5."}
+              {depositMethod === "momo"
+                ? "Deposits are collected through the OnTech payment gateway (payments.ontech.co.zm). Minimum $5. Your balance is credited after the mobile money confirmation is received."
+                : "Card payments go through Stripe Checkout when STRIPE_SECRET_KEY is set. Without it, card deposits are sandboxed (instant credit, no real charge). Minimum $5."}
             </p>
             <button onClick={() => { setDepositOpen(false); setWithdrawOpen(true); sfx.click(); }} className="w-full text-center text-[11px] font-bold text-slate-500 underline-offset-2 transition hover:text-white hover:underline">
               Want to withdraw instead?
