@@ -1,13 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import sfx from "@/lib/sound";
 import { currency, toNumber } from "@/lib/money";
 import type { Bet, Wallet } from "@/lib/wallet";
 import { cashOutBet, depositWallet, loadWallet, resetWallet, requestWithdrawal, saveWallet } from "@/lib/wallet";
+import { useAuth } from "@/lib/useAuth";
+import { signOutUser } from "@/lib/authActions";
+import {
+  fetchCloudPayment,
+  fetchCloudWallet,
+  recordCloudPayment,
+  subscribeCloudWallet,
+  writeCloudWallet,
+} from "@/lib/firestoreWallet";
 import CasinoTab from "./GameBoards";
 import Sportsbook from "./Sportsbook";
+import AuthModal from "./AuthModal";
 import { fetchSports, getApiKey, setApiKey } from "@/lib/odds";
 
 type Tab = "sports" | "casino" | "bets";
@@ -41,6 +51,19 @@ export default function BettingApp() {
   const checkedSession = useRef(false);
   const walletRef = useRef(wallet);
   const [pendingPayment, setPendingPayment] = useState<{ reference: string; paymentId: string | null; amount: number } | null>(null);
+
+  // SSR-safe "mounted" flag — avoids hydration mismatches from localStorage.
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
+
+  const { user, loading: authLoading } = useAuth();
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [cloudReady, setCloudReady] = useState(false);
+  const [cloudUid, setCloudUid] = useState<string | null>(null);
+  const lastCloudWrite = useRef(0);
 
   useEffect(() => {
     walletRef.current = wallet;
@@ -177,12 +200,19 @@ export default function BettingApp() {
     return () => window.clearTimeout(t);
   }, [banner]);
 
-  /** Credit the wallet once per confirmed payment reference. */
-  function markPaid(method: string, amount: number, reference: string, note: string): boolean {
+  /** Credit the wallet once per confirmed payment reference (local + cloud). */
+  async function markPaid(method: string, amount: number, reference: string, note: string): Promise<boolean> {
     if (loadPaidRefs().includes(reference)) return false;
+    if (user) {
+      const exists = await fetchCloudPayment(user.uid, reference);
+      if (exists) return false;
+    }
     const w = depositWallet(walletRef.current, amount, method, note);
     setWallet(w);
     storePaidRef(reference);
+    if (user) {
+      void recordCloudPayment(user.uid, reference, { amount, method, note, time: Date.now() });
+    }
     setDepositPhase("idle");
     setPendingPayment(null);
     sfx.deposit();
@@ -201,8 +231,9 @@ export default function BettingApp() {
         .then((res) => res.json())
         .then((data) => {
           if (data?.confirmed) {
-            markPaid("Mobile Money (OnTech)", p.amount, p.reference, `OnTech ${p.reference}`);
-            setDepositOpen(false);
+            void markPaid("Mobile Money (OnTech)", p.amount, p.reference, `OnTech ${p.reference}`).then((paid) => {
+              if (paid) setDepositOpen(false);
+            });
           }
         })
         .catch(() => {
@@ -214,6 +245,69 @@ export default function BettingApp() {
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depositPhase, pendingPayment]);
+
+  /* ---------------- account & cloud wallet sync ---------------- */
+
+  // On auth change: adopt the Firestore wallet (or seed/upload one), then
+  // subscribe to live updates from other devices/tabs.
+  useEffect(() => {
+    if (!mounted || authLoading) return;
+    let alive = true;
+    let unsub: (() => void) | null = null;
+
+    if (user) {
+      const uid = user.uid;
+      void (async () => {
+        const cloud = await fetchCloudWallet(uid);
+        if (!alive) return;
+        if (cloud) {
+          lastCloudWrite.current = cloud.updatedAt;
+          setWallet({ balance: cloud.balance, bonus: cloud.bonus, bets: cloud.bets, moves: cloud.moves });
+        } else {
+          const guest = loadWallet();
+          const hasActivity =
+            guest.bets.length > 0 || guest.moves.length > 0 || Math.abs(guest.balance - guest.bonus) > 0.001;
+          const base = hasActivity ? guest : resetWallet();
+          setWallet(base);
+          const now = Date.now();
+          lastCloudWrite.current = now;
+          await writeCloudWallet(uid, base, now);
+        }
+        if (alive) {
+          setCloudUid(uid);
+          setCloudReady(true);
+        }
+      })();
+
+      unsub = subscribeCloudWallet(uid, (cloud) => {
+        if (!alive) return;
+        if (cloud && cloud.updatedAt > lastCloudWrite.current) {
+          lastCloudWrite.current = cloud.updatedAt;
+          setWallet({ balance: cloud.balance, bonus: cloud.bonus, bets: cloud.bets, moves: cloud.moves });
+        }
+      });
+    } else {
+      // Signed out / guest → back to the local wallet.
+      const t = window.setTimeout(() => setWallet(loadWallet()), 0);
+      unsub = () => window.clearTimeout(t);
+    }
+
+    return () => {
+      alive = false;
+      unsub?.();
+    };
+  }, [mounted, authLoading, user]);
+
+  // Debounced cloud write whenever the wallet changes (signed in only).
+  useEffect(() => {
+    if (!mounted || !user || !cloudReady || cloudUid !== user.uid) return;
+    const t = window.setTimeout(() => {
+      const now = Date.now();
+      lastCloudWrite.current = now;
+      void writeCloudWallet(user.uid, wallet, now);
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [mounted, user, cloudReady, cloudUid, wallet]);
 
   /* ---------------- actions ---------------- */
 
@@ -239,8 +333,9 @@ export default function BettingApp() {
           return;
         }
         if (data?.sandbox) {
-          markPaid("Card (sandbox)", amount, `sandbox-${Date.now()}`, data.note ?? "Sandbox card deposit");
-          setDepositOpen(false);
+          void markPaid("Card (sandbox)", amount, `sandbox-${Date.now()}`, data.note ?? "Sandbox card deposit").then((paid) => {
+            if (paid) setDepositOpen(false);
+          });
         } else if (data?.url) {
           window.location.href = data.url;
         }
@@ -284,8 +379,9 @@ export default function BettingApp() {
           const note = data.sandbox
             ? `Gateway ${data.gatewayError ?? "unavailable"} — sandbox credit (${normalized})`
             : `OnTech ${data.reference} · ${normalized}`;
-          const paid = markPaid(method, amount, data.reference, note);
-          if (paid) setDepositOpen(false);
+          void markPaid(method, amount, data.reference, note).then((paid) => {
+            if (paid) setDepositOpen(false);
+          });
           return;
         }
         setPendingPayment({ reference: data.reference, paymentId: data.paymentId ?? null, amount });
@@ -351,6 +447,13 @@ export default function BettingApp() {
     showToast("Demo balance restored to the $250 welcome bonus.");
   }
 
+  function handleSignOut() {
+    sfx.click();
+    void signOutUser().catch(() => undefined);
+    setWallet(loadWallet());
+    showToast("Signed out — back to guest mode (local wallet).");
+  }
+
   /* ---------------- derived ---------------- */
 
   const openCount = wallet.bets.filter((b) => b.status === "open").length;
@@ -377,6 +480,20 @@ export default function BettingApp() {
   }, [wallet.bets]);
 
   /* ---------------- render ---------------- */
+
+  if (!mounted) {
+    return (
+      <main className="min-h-screen bg-[#070b16] text-slate-100">
+        <div className="grid min-h-screen place-items-center">
+          <div className="text-center">
+            <div className="logo-badge mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-amber-300 via-orange-400 to-rose-500 text-2xl font-black text-slate-950 shadow-lg shadow-orange-500/25">X</div>
+            <p className="mt-4 text-sm font-black tracking-[0.2em] text-white">XACHEUS BETTING</p>
+            <div className="mx-auto mt-5 h-8 w-8 animate-spin rounded-full border-2 border-cyan-300/30 border-t-cyan-300" />
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className={`min-h-screen overflow-x-hidden bg-[#070b16] text-slate-100 ${shaking ? "app-shake" : ""}`}>
@@ -449,6 +566,31 @@ export default function BettingApp() {
             >
               ⚙️
             </button>
+            {user ? (
+              <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.045] px-2.5 py-1.5">
+                <div className="grid h-7 w-7 place-items-center rounded-full bg-gradient-to-br from-cyan-300 to-emerald-400 text-[11px] font-black text-slate-950">
+                  {(user.email ?? "U")[0].toUpperCase()}
+                </div>
+                <div className="hidden min-w-0 md:block">
+                  <p className="max-w-[150px] truncate text-[10px] font-bold leading-none text-white">{user.email ?? "Account"}</p>
+                  <p className="mt-1 text-[8px] font-bold tracking-[0.14em] text-emerald-300">☁ SYNCED</p>
+                </div>
+                <button
+                  onClick={handleSignOut}
+                  title="Sign out"
+                  className="rounded-lg bg-white/[0.07] px-2 py-1 text-[9px] font-black text-slate-300 transition hover:bg-white/[0.14] hover:text-white"
+                >
+                  SIGN OUT
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { sfx.click(); setAuthModalOpen(true); }}
+                className="rounded-xl border border-cyan-300/40 bg-cyan-300/10 px-4 py-2 text-xs font-black text-cyan-100 transition hover:bg-cyan-300/20"
+              >
+                SIGN IN
+              </button>
+            )}
             <div className="balance-pill flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.08] px-3 py-1.5">
               <span className="text-xs">◈</span>
               <div>
@@ -672,6 +814,8 @@ export default function BettingApp() {
           </div>
         </Modal>
       )}
+
+      {authModalOpen && <AuthModal onClose={() => setAuthModalOpen(false)} />}
 
       {withdrawOpen && (
         <Modal title="Withdraw" onClose={() => setWithdrawOpen(false)}>

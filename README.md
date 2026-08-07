@@ -59,9 +59,41 @@ Open the site, hit the **⚙ Settings** button and paste your [The Odds API key]
 
 The OnTech response schema isn't publicly documented, so parsing (`src/lib/ontech.ts`) is defensive: it reads status/reference/id from the common field shapes, verifies webhooks against several standard HMAC header conventions, and treats a bare `X-API-Key` header match as a last-resort check. Confirm the exact webhook payload/header with the gateway provider and tighten `verifyWebhookSignature` if needed.
 
+## Accounts: Firebase Auth + Firestore
+
+Players can **sign in / sign up** (email + password or Google) with their balance, bet ledger, money moves and paid-deposit references **synced to Firestore** — they follow the account across devices and tabs (live updates via `onSnapshot`). Guests keep playing with a local wallet and can upload it to their account on sign-in.
+
+- Client setup: `src/lib/firebase.ts` (lazy init — safe under SSR).
+- Wallet sync: `src/lib/firestoreWallet.ts` → `users/{uid}/wallet/current` (+ `users/{uid}/payments/{ref}` for deposit idempotency).
+- Firestore security rules: **`firestore.rules`** — users can only read/write their own data, and only when authenticated.
+
+### Firebase console setup (one-time)
+
+1. Open the project (`xacheus-339ba`) in [console.firebase.google.com](https://console.firebase.google.com).
+2. **Authentication → Sign-in method** → enable **Email/Password** and **Google**.
+3. **Authentication → Settings → Authorized domains** → add your Vercel domain(s) (and `localhost` for dev).
+4. **Firestore Database → Create database** (production mode is fine — rules below gate access).
+5. Deploy rules:
+   ```bash
+   npm i -g firebase-tools
+   firebase login
+   firebase use xacheus-339ba
+   firebase deploy --only firestore:rules
+   ```
+6. Optional: set `NEXT_PUBLIC_FIREBASE_*` env vars on Vercel to point at a different project (the app ships with `xacheus-339ba` baked in).
+
+## Deploying to Vercel
+
+1. Push this repo to GitHub and **Import** it in the Vercel dashboard (framework: Next.js — auto-detected; `vercel.json` is included).
+2. Add the environment variables (Settings → Environment Variables): `ODDS_API_KEY`, `PAYMENT_GATEWAY_BASE_URL`, `PAYMENT_GATEWAY_API_KEY`, `PAYMENT_GATEWAY_WEBHOOK_SECRET`, optional `STRIPE_SECRET_KEY`. (Firebase vars are optional — defaults are baked in.)
+3. Deploy. Then add the production domain to the Firebase **Authorized domains** list.
+4. CLI alternative: `npm i -g vercel && vercel` (or `vercel --prod`).
+
+> ⚠️ **Never commit `.env.local`** — it is gitignored. It holds the real gateway/Stripe secrets.
+
 ## Production notes
 
-- **Ledger**: the wallet currently persists to `localStorage` (zero-setup demo). For a real-money deployment, move `src/lib/wallet.ts` operations behind `src/db` and credit deposits server-side (webhook or the confirm route).
+- **Ledger**: guests persist to `localStorage`; signed-in users sync to Firestore (`users/{uid}/wallet/current`) with live multi-device updates. For a real-money deployment, move `src/lib/wallet.ts` operations behind `src/db` and credit deposits server-side (webhook or the confirm route) so the ledger is authoritative on the server.
 - **Settlement**: scores are fetched only when you have open bets (request-budget friendly). Auto-settle runs on load and via the **Settle results** button.
 - **The Odds API budget**: the free tier allows 500 requests/month; the header shows your remaining calls (`x-requests-remaining`).
 
