@@ -3,6 +3,10 @@ import { ApiError, verifyRequest, db } from "@/lib/server/firebase";
 import { commandSchema } from "@/lib/server/validation";
 import { executeCommand } from "@/lib/server/commands";
 export const runtime = "nodejs";
+// The first authenticated request after a sign-up pays the Admin SDK cold start
+// (gRPC channel + token exchange) inside a Firestore transaction. The default
+// serverless budget is not enough for that on a fresh instance.
+export const maxDuration = 30;
 export async function POST(request: Request) {
   try {
     const identity = await verifyRequest(request);

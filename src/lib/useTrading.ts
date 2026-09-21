@@ -24,29 +24,118 @@ import type { ServiceHealth } from "./trading/status";
 import { connectionLabel } from "./trading/status";
 import { useOnline } from "./useOnline";
 export type Health = ServiceHealth;
-export async function api(user: User, path: string, body?: unknown) {
-  const token = await user.getIdToken();
-  const key = crypto.randomUUID();
-  const options = {
-    method: body ? "POST" : "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "Idempotency-Key": key,
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  };
-  // A network retry reuses the same key, so a committed command cannot apply twice.
-  let response: Response;
-  try {
-    response = await fetch(path, options);
-  } catch {
-    response = await fetch(path, options);
-  }
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Request failed.");
-  return data;
+export type ApiFailure = Error & { status?: number };
+
+/**
+ * Idempotency keys must exist outside secure contexts too: `crypto.randomUUID`
+ * is undefined on plain HTTP (LAN previews, containers), which used to abort
+ * every command with a TypeError instead of reaching the server.
+ */
+export function commandKey() {
+  const webCrypto = globalThis.crypto;
+  if (webCrypto && typeof webCrypto.randomUUID === "function")
+    return webCrypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (webCrypto?.getRandomValues) webCrypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+
+/**
+ * Server, gateway and platform error bodies all look different (JSON with a
+ * string `error`, JSON with `{ error: { message } }`, Vercel HTML, empty body).
+ * Every shape becomes one readable sentence instead of "Unexpected token <" or
+ * "[object Object]".
+ */
+function describeResponse(response: Response, text: string) {
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      const value = (parsed as { error?: unknown } | null)?.error;
+      if (typeof value === "string" && value.trim()) return value.trim();
+      if (value && typeof value === "object") {
+        const message = (value as { message?: unknown }).message;
+        if (typeof message === "string" && message.trim()) return message.trim();
+        const code = (value as { code?: unknown }).code;
+        if (code !== undefined) return `Request failed (${String(code)}).`;
+      }
+      if (typeof parsed === "string" && parsed.trim()) return parsed.trim();
+    } catch {
+      /* Not JSON — fall through to the raw text. */
+    }
+    const plain = text
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (plain) return plain.slice(0, 240);
+  }
+  return `Request failed (HTTP ${response.status}).`;
+}
+
+export async function api(user: User, path: string, body?: unknown) {
+  const key = commandKey();
+  const send = async (token: string) => {
+    const options = {
+      method: body ? "POST" : "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": key,
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    };
+    // A network retry reuses the same key, so a committed command cannot apply twice.
+    try {
+      return await fetch(path, options);
+    } catch {
+      return await fetch(path, options);
+    }
+  };
+
+  let response = await send(await user.getIdToken());
+  if (response.status === 401) {
+    // An expired/restored session is normal after a reload or a sleeping phone:
+    // force one token refresh before telling the user to sign in again.
+    try {
+      response = await send(await user.getIdToken(true));
+    } catch {
+      /* keep the original 401 below */
+    }
+  }
+
+  const text = await response.text().catch(() => "");
+  if (!response.ok) {
+    const failure: ApiFailure = new Error(describeResponse(response, text));
+    failure.status = response.status;
+    throw failure;
+  }
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`The server returned an unreadable response (HTTP ${response.status}).`);
+  }
+}
+
+/** Actionable wording for the account bootstrap that runs right after sign-in. */
+function describeInitializeFailure(error: unknown) {
+  const message =
+    error instanceof Error && error.message
+      ? error.message
+      : "Account initialization failed.";
+  const status = (error as ApiFailure).status;
+  if (status === 401) return `${message} Sign in again to continue.`;
+  if (status && status >= 500)
+    return `Your account could not be created yet — the server rejected the request. ${message}`;
+  return message;
+}
+
+const INITIALIZE_ATTEMPTS = 5;
+const INITIALIZE_BASE_DELAY_MS = 2000;
+const INITIALIZE_MAX_DELAY_MS = 30000;
+
 export function useTrading(user: User | null) {
   const online = useOnline();
   const [fromCache, setFromCache] = useState(true);
@@ -95,23 +184,62 @@ export function useTrading(user: User | null) {
   useEffect(() => {
     if (!user) return;
     let active = true;
-    void api(user, "/api/command", { action: "initialize" }).catch((e) => {
-      if (active) setError(e.message);
-    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+    let accountLoaded = false;
+    let bootstrapError = false;
+
     const db = getDbInstance();
     const root = `users/${user.uid}`;
     const fail = (e: Error) => {
       setError(`Firestore: ${e.message}`);
       setConnectionFailed(true);
     };
+
+    /**
+     * Signing in is not enough: the Firestore account is created by the server
+     * (client writes are denied by the rules). A single failed request used to
+     * leave a brand-new user on "Connecting your persistent account" forever,
+     * so the bootstrap is retried with a bounded backoff until it succeeds or
+     * the account document arrives.
+     */
+    const initialize = async () => {
+      if (!active || accountLoaded) return;
+      try {
+        await api(user, "/api/command", { action: "initialize" });
+        bootstrapError = false;
+        if (active) setError("");
+      } catch (e) {
+        if (!active || accountLoaded) return;
+        bootstrapError = true;
+        setError(describeInitializeFailure(e));
+        if (attempt < INITIALIZE_ATTEMPTS) {
+          const delay = Math.min(
+            INITIALIZE_MAX_DELAY_MS,
+            INITIALIZE_BASE_DELAY_MS * 2 ** attempt,
+          );
+          attempt += 1;
+          timer = setTimeout(initialize, delay);
+        }
+      }
+    };
+    void initialize();
+
     const unsubs = [
       onSnapshot(
         doc(db, root),
         { includeMetadataChanges: true },
         (s) => {
-          setAccount(s.exists() ? (s.data() as Account) : null);
+          const exists = s.exists();
+          if (exists) accountLoaded = true;
+          setAccount(exists ? (s.data() as Account) : null);
           setFromCache(s.metadata.fromCache);
           if (!s.metadata.fromCache) setConnectionFailed(false);
+          // The account exists, so a stale bootstrap complaint is no longer true.
+          if (exists && bootstrapError) {
+            bootstrapError = false;
+            setError("");
+          }
         },
         fail,
       ),
@@ -164,6 +292,7 @@ export function useTrading(user: User | null) {
     ];
     return () => {
       active = false;
+      if (timer) clearTimeout(timer);
       unsubs.forEach((fn) => fn());
     };
   }, [user]);
@@ -199,7 +328,7 @@ export function useTrading(user: User | null) {
       setError("");
       try {
         const result = await api(user, "/api/command", body);
-        setNotice(result.message);
+        setNotice(result.message ?? "");
         return true;
       } catch (e) {
         setError(e instanceof Error ? e.message : "Request failed.");

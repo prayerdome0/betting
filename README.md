@@ -6,7 +6,9 @@ A responsive Next.js trading workspace backed by **Firebase Authentication and F
 
 ## Current deployment status
 
-The provided public client configuration for **`ai-health-d2c5b`** is wired in. Public Firebase config is not a server credential. This checkout does **not** contain an Admin key, does not deploy rules automatically, and cannot turn on Firebase services on your behalf.
+The provided public client configuration for **`ai-health-d2c5b`** is wired in as the default for every `NEXT_PUBLIC_FIREBASE_*` variable. Public Firebase config is not a server credential. This checkout does **not** contain an Admin key, does not deploy rules automatically, and cannot turn on Firebase services on your behalf.
+
+**Pointing the site at a different Firebase project** (for example the project your existing users already live in) means setting *all* of `NEXT_PUBLIC_FIREBASE_API_KEY`, `_AUTH_DOMAIN`, `_PROJECT_ID`, `_APP_ID`, `_MESSAGING_SENDER_ID`, `_STORAGE_BUCKET` **and** the server-side `FIREBASE_PROJECT_ID` plus a service account from that same project. A partial switch leaves the browser signing users into one project while the server verifies tokens against another; every authenticated request then fails and new accounts can never be created. The server refuses that combination explicitly (`PROJECT_MISMATCH` in `GET /api/health`) instead of failing silently.
 
 **Until you complete the Firebase setup below and run the worker, accounts cannot initialize in Firestore and new trading sessions are blocked.** The UI surfaces connection/setup errors; it never falls back to fake balances, seeded trades, or browser-only account storage. A signed-out dashboard deliberately shows empty data rather than an invented $500 portfolio.
 
@@ -16,9 +18,13 @@ The provided public client configuration for **`ai-health-d2c5b`** is wired in. 
 2. Create a **Cloud Firestore** database in the desired region. Confirm billing, budgets, and access policies.
 3. Install dependencies with Node **22+**: `npm ci`.
 4. Copy `.env.example` to `.env.local`. Its default public config already points to the supplied project.
-5. Configure **server Application Default Credentials**, independently for the web server and worker:
-   - Recommended: an attached Google Cloud service identity / Workload Identity Federation. Give only necessary Firestore data access and Firebase Auth lookup/token-verification permissions.
-   - Local alternative: `GOOGLE_APPLICATION_CREDENTIALS=/secure/external/path/credential.json`. Keep that file outside the checkout. Never paste credentials into chat, expose them through `NEXT_PUBLIC_*`, or ship them in a client or Android bundle.
+5. Give the **server** a Firebase identity, independently for the web server and the worker. This is mandatory: the Firestore rules deny every client write, so the account document created immediately after sign-up can only be written server-side. Pick one:
+   - **Serverless / Vercel (recommended there):** create a service account key (Firebase console → Project settings → Service accounts → Generate new private key) and set it as `FIREBASE_SERVICE_ACCOUNT_JSON` (the whole JSON file in one variable), or split it into `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY` (+ optional `FIREBASE_PRIVATE_KEY_ID`). PEM newlines may stay as literal `\n`; they are normalized. Give that account only Firestore data access and Firebase Auth token verification.
+   - **GCP / Cloud Run / VM:** an attached Google Cloud service identity via Workload Identity Federation or Application Default Credentials.
+   - **Local alternative:** `GOOGLE_APPLICATION_CREDENTIALS=/secure/external/path/credential.json`. Keep that file outside the checkout. Never paste credentials into chat, expose them through `NEXT_PUBLIC_*`, or ship them in a client or Android bundle.
+   `FIREBASE_PROJECT_ID` must match `NEXT_PUBLIC_FIREBASE_PROJECT_ID` (and the service account's `project_id`). A mismatch is rejected at startup with an explicit `PROJECT_MISMATCH` diagnostic, because ID tokens can only be verified inside the project that issued them.
+
+   Verify at any time with `GET /api/health` (or `npm run doctor -- --json`): `checks.identity` must be `true`, and `identitySource` tells you which credential mechanism is in use.
 6. Deploy rules and indexes with an authorized Firebase CLI identity:
    ```bash
    npx firebase deploy --only firestore:rules,firestore:indexes --project ai-health-d2c5b
@@ -41,6 +47,30 @@ The provided public client configuration for **`ai-health-d2c5b`** is wired in. 
    npm run admin:grant -- FIREBASE_AUTH_UID revoke
    ```
    Sign out/in to refresh the custom claim. Admin authorization is `request.auth.token.admin === true`; it is never inferred from a client profile field or an email address.
+
+### Deploying to Vercel
+
+`vercel.json` only declares the framework; the runtime configuration lives in Vercel → Settings → Environment Variables:
+
+| Variable | Value |
+| --- | --- |
+| `NEXT_PUBLIC_FIREBASE_API_KEY` / `_AUTH_DOMAIN` / `_PROJECT_ID` | your Firebase web app config (public) |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` / `_MESSAGING_SENDER_ID` / `_STORAGE_BUCKET` | optional, set them together with the project id |
+| `FIREBASE_PROJECT_ID` | same project as the browser config |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | the full service account key file (server-only) |
+
+Redeploy after changing them (`NEXT_PUBLIC_*` values are inlined at build time). Then in Firebase console → Authentication → Settings → **Authorized domains**, add your production domain and every preview domain you intend to use; otherwise sign-in is rejected with `auth/unauthorized-domain`.
+
+The **worker cannot run on Vercel** (it is a request-only platform). Host `npm run worker` on an always-on VM/container — see below. Until it runs, accounts initialize normally but starting a session is blocked with "The trading worker is offline".
+
+### Sign-in troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Sign-up succeeds, dashboard stays on "Connecting your persistent account" | `/api/command` cannot act as a trusted server. Read the banner text: `NOT_CONFIGURED` means no server credential, `PROJECT_MISMATCH` means browser and server point at different Firebase projects, `CREDENTIAL_REJECTED` means Google refused the key. `GET /api/health` returns the same diagnostics as JSON. |
+| `auth/unauthorized-domain` / `auth/admin-restricted-operation` | Firebase console → Authentication: enable Email/Password and add the site domain to Authorized domains. |
+| Browser-level "This page couldn't load" on a `*.vercel.app` **preview** URL | Vercel Deployment Protection (Standard Protection) gates preview deployments behind a Vercel login. Use the production domain, or turn protection off for that deployment. |
+| Blank page after an unexpected client error | Should no longer happen: `src/app/error.tsx` and `src/app/global-error.tsx` render a recoverable message with the error and a reload action. |
 
 ### Hosting the worker is mandatory
 
@@ -97,7 +127,8 @@ Firestore onSnapshot listeners → dashboard
 - Authoritative execution: `src/lib/server/engine.ts`, `scripts/worker.ts`.
 - Commands, validation, one-time initialization: `src/lib/server/commands.ts`, `validation.ts`.
 - Authenticated API: `src/app/api/command/route.ts`; admin API: `src/app/api/admin/route.ts`.
-- Security: `firestore.rules`; Admin SDK initialization is server-only, never imported into the client bundle.
+- Security: `firestore.rules`; Admin SDK initialization is server-only, never imported into the client bundle. Server identity resolution and the browser/server project agreement check live in `src/lib/server/firebase.ts` + `src/lib/firebaseProject.ts`.
+- Resilience: `src/app/error.tsx` and `src/app/global-error.tsx` keep an unexpected client exception from turning into a dead page; `useAuth` reports auth/config failures instead of hanging, and `useTrading` retries the one-time account bootstrap with a bounded backoff.
 
 ### Data model
 
@@ -187,7 +218,9 @@ An **inactive GitHub Actions template** is provided at `docs/ci/verify.yml.examp
 
 ### Verification in the build environment
 
-- TypeScript, ESLint, production build and 42 unit tests pass.
+- TypeScript, ESLint, production build and 65 unit tests pass.
+- **The client authentication flow is covered end to end** by a jsdom harness (`tests/authflow.dom.test.ts`, support in `tests/support/dom-flow.ts`) that renders the *real* components against a fake Firebase Auth/Firestore transport: registration → account creation → dashboard, sign-in, reload with a persisted session, sign-out → sign-in again, an auth failure inside the dialog, denied Firestore reads, and a 503/HTML/object-shaped `/api/command` failure — the exact conditions that used to strand a new user after sign-up.
+- **Server identity resolution is covered** by `tests/identity.test.ts`: service-account JSON in one env var, split fields, literal `\n` PEM escaping, malformed JSON, project mismatch (credential vs. `FIREBASE_PROJECT_ID` vs. `NEXT_PUBLIC_FIREBASE_PROJECT_ID`), emulator isolation, and the guarantee that a missing server credential produces a 503 about the server rather than a 401 blaming the user.
 - Desktop/mobile interaction, readiness/offline-state, and unauthenticated API access checks pass (6 browser tests).
 - **Firebase-backed integration/account tests were not executed here**: no server identity is configured, Java is unavailable, and this sandbox cannot download the official emulator binaries. These limitations are not replaced by a fake backend.
 

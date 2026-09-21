@@ -1939,6 +1939,23 @@ td > svg {
   color: var(--muted);
   max-width: 430px;
 }
+.error-boundary {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+}
+.error-boundary .panel {
+  width: min(560px, 100%);
+}
+.error-boundary .helper {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  word-break: break-word;
+}
 .setup-panel {
   display: flex;
   align-items: center;

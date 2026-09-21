@@ -80,17 +80,24 @@ const DESCRIPTIONS: Record<string, string> = {
   Admin: "Account activity and system health, with a complete audit trail.",
 };
 export default function TradingApp() {
-  const { user, loading } = useAuth();
+  const { user, loading, error } = useAuth();
   return (
-    <Workspace key={user?.uid || "guest"} user={user} authLoading={loading} />
+    <Workspace
+      key={user?.uid || "guest"}
+      user={user}
+      authLoading={loading}
+      authError={error}
+    />
   );
 }
 function Workspace({
   user,
   authLoading,
+  authError,
 }: {
   user: User | null;
   authLoading: boolean;
+  authError: string;
 }) {
   const data = useTrading(user);
   const {
@@ -668,6 +675,11 @@ function Workspace({
             <div className="alert error" role="status">
               You are offline. Displayed data may be stale. No new commands can
               be sent, but your AI session may still be running on the server.
+            </div>
+          )}
+          {authError && (
+            <div className="alert error" role="alert">
+              <span>Authentication: {authError}</span>
             </div>
           )}
           {error && (
