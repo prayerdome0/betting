@@ -86,72 +86,98 @@ const TradingEngineContext = createContext<TradingEngineContextType | undefined>
 
 const LOCAL_STORAGE_KEY = "nexus_trader_state_v1";
 
+const INITIAL_SYSTEM_LOGS: SystemLog[] = [
+  {
+    id: "log-1",
+    timestamp: "2026-09-21T09:30:00.000Z",
+    level: "INFO",
+    module: "SIMULATOR",
+    message: "Simulation engine initialized. Demo ledger ready with $500.00 base capital.",
+  },
+  {
+    id: "log-2",
+    timestamp: "2026-09-21T09:30:15.000Z",
+    level: "AI",
+    module: "STRATEGY",
+    message: "AlphaTrend Quant Engine v2.8 calibrated. Multi-timeframe scanners online.",
+  },
+  {
+    id: "log-3",
+    timestamp: "2026-09-21T09:30:30.000Z",
+    level: "INFO",
+    module: "RISK_ENGINE",
+    message: "Risk parameters verified. Max open trades: 3. Dynamic stop/target brackets armed.",
+  },
+];
+
+const DEFAULT_CONFIG: EngineConfig = {
+  aiEnabled: false,
+  tradeAmount: 10.0,
+  maxOpenTrades: 3,
+  targetWinRateBenchmark: 75,
+  strategyMode: "SCALPING",
+  stopLossPercent: 1.2,
+  takeProfitPercent: 2.0,
+  tickSpeed: 1400,
+  enabledMarkets: INITIAL_MARKETS.map((m) => m.symbol),
+  soundEnabled: true,
+};
+
+function readStorageKey<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    if (parsed && key in parsed && parsed[key] !== undefined) {
+      return parsed[key] as T;
+    }
+  } catch {
+    // fallback
+  }
+  return fallback;
+}
+
 export function TradingEngineProvider({ children }: { children: ReactNode }) {
-  const [balance, setBalance] = useState<number>(500.0);
-  const [openPositions, setOpenPositions] = useState<Position[]>([]);
-  const [closedTrades, setClosedTrades] = useState<Trade[]>(INITIAL_CLOSED_TRADES);
-  const [withdrawalRequests, setWithdrawalRequests] = useState<WithdrawalRequest[]>([]);
+  const [balance, setBalance] = useState<number>(() =>
+    readStorageKey<number>("balance", 500.0)
+  );
+  const [openPositions, setOpenPositions] = useState<Position[]>(() =>
+    readStorageKey<Position[]>("openPositions", [])
+  );
+  const [closedTrades, setClosedTrades] = useState<Trade[]>(() =>
+    readStorageKey<Trade[]>("closedTrades", INITIAL_CLOSED_TRADES)
+  );
+  const [withdrawalRequests, setWithdrawalRequests] = useState<WithdrawalRequest[]>(
+    () => readStorageKey<WithdrawalRequest[]>("withdrawalRequests", [])
+  );
+  const [config, setConfig] = useState<EngineConfig>(() =>
+    readStorageKey<EngineConfig>("config", DEFAULT_CONFIG)
+  );
+
   const [markets, setMarkets] = useState<Market[]>(INITIAL_MARKETS);
-  const [selectedMarket, setSelectedMarket] = useState<Market>(INITIAL_MARKETS[0]);
-  const [systemLogs, setSystemLogs] = useState<SystemLog[]>([
-    {
-      id: "log-1",
-      timestamp: new Date(Date.now() - 60000).toISOString(),
-      level: "INFO",
-      module: "SIMULATOR",
-      message: "Simulation engine initialized. Demo ledger ready with $500.00 base capital.",
-    },
-    {
-      id: "log-2",
-      timestamp: new Date(Date.now() - 45000).toISOString(),
-      level: "AI",
-      module: "STRATEGY",
-      message: "AlphaTrend Quant Engine v2.8 calibrated. Multi-timeframe scanners online.",
-    },
-    {
-      id: "log-3",
-      timestamp: new Date(Date.now() - 30000).toISOString(),
-      level: "INFO",
-      module: "RISK_ENGINE",
-      message: "Risk parameters verified. Max open trades: 3. Dynamic stop/target brackets armed.",
-    },
-  ]);
+  const [selectedSymbol, setSelectedSymbol] = useState<string>(
+    INITIAL_MARKETS[0].symbol
+  );
+  const [systemLogs, setSystemLogs] = useState<SystemLog[]>(INITIAL_SYSTEM_LOGS);
   const [lastEvent, setLastEvent] = useState<AITradeEvent | null>(null);
   const [selectedReason, setSelectedReason] = useState<AIReasoning | null>(null);
   const [isReasonModalOpen, setIsReasonModalOpen] = useState(false);
 
-  const [config, setConfig] = useState<EngineConfig>({
-    aiEnabled: false,
-    tradeAmount: 10.0,
-    maxOpenTrades: 3,
-    targetWinRateBenchmark: 75,
-    strategyMode: "SCALPING",
-    stopLossPercent: 1.2,
-    takeProfitPercent: 2.0,
-    tickSpeed: 1400,
-    enabledMarkets: INITIAL_MARKETS.map((m) => m.symbol),
-    soundEnabled: true,
-  });
-
   const lastEventTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load state from localStorage on initial client mount
+  // References to avoid stale closures inside intervals
+  const marketsRef = useRef(markets);
+  const openPositionsRef = useRef(openPositions);
+  const configRef = useRef(config);
+  const balanceRef = useRef(balance);
+
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (typeof parsed.balance === "number") setBalance(parsed.balance);
-        if (Array.isArray(parsed.openPositions)) setOpenPositions(parsed.openPositions);
-        if (Array.isArray(parsed.closedTrades)) setClosedTrades(parsed.closedTrades);
-        if (Array.isArray(parsed.withdrawalRequests))
-          setWithdrawalRequests(parsed.withdrawalRequests);
-        if (parsed.config) setConfig((prev) => ({ ...prev, ...parsed.config }));
-      }
-    } catch {
-      // Ignore parse errors
-    }
-  }, []);
+    marketsRef.current = markets;
+    openPositionsRef.current = openPositions;
+    configRef.current = config;
+    balanceRef.current = balance;
+  });
 
   // Save persistent state
   useEffect(() => {
@@ -171,7 +197,11 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
     }
   }, [balance, openPositions, closedTrades, withdrawalRequests, config]);
 
-  // Available balance is balance minus open positions allocated margin
+  // Derived selected market
+  const selectedMarket =
+    markets.find((m) => m.symbol === selectedSymbol) || markets[0];
+
+  // Available balance
   const allocatedMargin = openPositions.reduce((acc, p) => acc + p.amount, 0);
   const available = Math.max(0, parseFloat((balance - allocatedMargin).toFixed(2)));
 
@@ -199,7 +229,6 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
     }, 7000);
   }, []);
 
-  // Open reason modal
   const openReasonModal = useCallback((reason: AIReasoning) => {
     setSelectedReason(reason);
     setIsReasonModalOpen(true);
@@ -213,122 +242,18 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
     setLastEvent(null);
   }, []);
 
-  // Execute Simulated AI Trade
-  const triggerAiTrade = useCallback(
-    (symbol?: string, side?: TradeSide) => {
-      // Pick target market
-      const candidateMarkets = markets.filter((m) =>
-        config.enabledMarkets.includes(m.symbol)
-      );
-      if (candidateMarkets.length === 0) return;
-
-      const market = symbol
-        ? candidateMarkets.find((m) => m.symbol === symbol) || candidateMarkets[0]
-        : candidateMarkets[Math.floor(Math.random() * candidateMarkets.length)];
-
-      const chosenSide: TradeSide =
-        side ||
-        (market.aiSignal === "BUY"
-          ? "BUY"
-          : market.aiSignal === "SELL"
-          ? "SELL"
-          : Math.random() > 0.45
-          ? "BUY"
-          : "SELL");
-
-      const tradeAmount = config.tradeAmount;
-
-      // Risk check: Available balance must cover tradeAmount
-      if (available < tradeAmount) {
-        addSystemLog(
-          "WARNING",
-          "RISK_ENGINE",
-          `Order rejected: Insufficient available balance ($${available.toFixed(
-            2
-          )}) for trade amount $${tradeAmount.toFixed(2)}`
-        );
-        return;
-      }
-
-      // Max open trades check
-      if (openPositions.length >= config.maxOpenTrades) {
-        addSystemLog(
-          "WARNING",
-          "RISK_ENGINE",
-          `Order rejected: Max open positions limit reached (${openPositions.length}/${config.maxOpenTrades})`
-        );
-        return;
-      }
-
-      const reasoning = generateAIReasoning(market, chosenSide, tradeAmount);
-
-      const newPosition: Position = {
-        id: `POS-${Date.now().toString().slice(-6)}`,
-        symbol: market.symbol,
-        name: market.name,
-        side: chosenSide,
-        amount: tradeAmount,
-        entryPrice: market.price,
-        currentPrice: market.price,
-        stopLoss: reasoning.stopLossPrice,
-        takeProfit: reasoning.takeProfitPrice,
-        pnl: 0,
-        pnlPercent: 0,
-        openTime: new Date().toISOString(),
-        status: "MONITORING",
-        reasoning,
-      };
-
-      setOpenPositions((prev) => [newPosition, ...prev]);
-
-      if (config.soundEnabled) {
-        sfx.tradeOpen();
-      }
-
-      addSystemLog(
-        "AI",
-        "TRADE_ENGINE",
-        `🤖 AI Trade opened: ${chosenSide} ${market.symbol} @ ${market.price.toFixed(
-          market.precision
-        )}, Amount: $${tradeAmount.toFixed(2)}, SL: ${reasoning.stopLossPrice}, TP: ${
-          reasoning.takeProfitPrice
-        }`
-      );
-
-      triggerEvent({
-        id: `evt-${Date.now()}`,
-        type: "AI_TRADE_OPENED",
-        asset: market.symbol,
-        action: chosenSide,
-        amount: tradeAmount,
-        entry: market.price,
-        demoBalance: balance,
-        timestamp: new Date().toISOString(),
-        reasoning,
-      });
-    },
-    [
-      markets,
-      config.enabledMarkets,
-      config.tradeAmount,
-      config.maxOpenTrades,
-      config.soundEnabled,
-      available,
-      openPositions.length,
-      balance,
-      addSystemLog,
-      triggerEvent,
-    ]
-  );
-
-  // Close Position
+  // Close Position function
   const closePosition = useCallback(
     (positionId: string, reason: Trade["closeReason"] = "MANUAL_CLOSE") => {
-      const pos = openPositions.find((p) => p.id === positionId);
+      const currentPosList = openPositionsRef.current;
+      const currentBal = balanceRef.current;
+      const cfg = configRef.current;
+
+      const pos = currentPosList.find((p) => p.id === positionId);
       if (!pos) return;
 
       const isWin = pos.pnl > 0;
-      const finalBalance = parseFloat((balance + pos.pnl).toFixed(2));
+      const finalBalance = parseFloat((currentBal + pos.pnl).toFixed(2));
       setBalance(finalBalance);
 
       const durationMs = Date.now() - new Date(pos.openTime).getTime();
@@ -357,7 +282,7 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
       setClosedTrades((prev) => [completedTrade, ...prev]);
       setOpenPositions((prev) => prev.filter((p) => p.id !== positionId));
 
-      if (config.soundEnabled) {
+      if (cfg.soundEnabled) {
         if (isWin) sfx.tradeWin();
         else sfx.tradeLoss();
       }
@@ -384,21 +309,123 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
         reasoning: pos.reasoning,
       });
     },
-    [openPositions, balance, config.soundEnabled, addSystemLog, triggerEvent]
+    [addSystemLog, triggerEvent]
   );
 
-  // Fast forward simulated trades (for testing stats & demonstration)
+  // Trigger Simulated AI Trade
+  const triggerAiTrade = useCallback(
+    (symbol?: string, side?: TradeSide) => {
+      const currentMarkets = marketsRef.current;
+      const cfg = configRef.current;
+      const currentBal = balanceRef.current;
+      const currentPositions = openPositionsRef.current;
+
+      const candidateMarkets = currentMarkets.filter((m) =>
+        cfg.enabledMarkets.includes(m.symbol)
+      );
+      if (candidateMarkets.length === 0) return;
+
+      const market = symbol
+        ? candidateMarkets.find((m) => m.symbol === symbol) || candidateMarkets[0]
+        : candidateMarkets[Math.floor(Math.random() * candidateMarkets.length)];
+
+      const chosenSide: TradeSide =
+        side ||
+        (market.aiSignal === "BUY"
+          ? "BUY"
+          : market.aiSignal === "SELL"
+          ? "SELL"
+          : Math.random() > 0.45
+          ? "BUY"
+          : "SELL");
+
+      const tradeAmount = cfg.tradeAmount;
+      const marginLocked = currentPositions.reduce((acc, p) => acc + p.amount, 0);
+      const curAvailable = Math.max(0, currentBal - marginLocked);
+
+      if (curAvailable < tradeAmount) {
+        addSystemLog(
+          "WARNING",
+          "RISK_ENGINE",
+          `Order rejected: Insufficient available balance ($${curAvailable.toFixed(
+            2
+          )}) for trade size $${tradeAmount.toFixed(2)}`
+        );
+        return;
+      }
+
+      if (currentPositions.length >= cfg.maxOpenTrades) {
+        addSystemLog(
+          "WARNING",
+          "RISK_ENGINE",
+          `Order rejected: Max open positions limit reached (${currentPositions.length}/${cfg.maxOpenTrades})`
+        );
+        return;
+      }
+
+      const reasoning = generateAIReasoning(market, chosenSide, tradeAmount);
+
+      const newPosition: Position = {
+        id: `POS-${Date.now().toString().slice(-6)}`,
+        symbol: market.symbol,
+        name: market.name,
+        side: chosenSide,
+        amount: tradeAmount,
+        entryPrice: market.price,
+        currentPrice: market.price,
+        stopLoss: reasoning.stopLossPrice,
+        takeProfit: reasoning.takeProfitPrice,
+        pnl: 0,
+        pnlPercent: 0,
+        openTime: new Date().toISOString(),
+        status: "MONITORING",
+        reasoning,
+      };
+
+      setOpenPositions((prev) => [newPosition, ...prev]);
+
+      if (cfg.soundEnabled) {
+        sfx.tradeOpen();
+      }
+
+      addSystemLog(
+        "AI",
+        "TRADE_ENGINE",
+        `🤖 AI Trade opened: ${chosenSide} ${market.symbol} @ ${market.price.toFixed(
+          market.precision
+        )}, Amount: $${tradeAmount.toFixed(2)}, SL: ${reasoning.stopLossPrice}, TP: ${
+          reasoning.takeProfitPrice
+        }`
+      );
+
+      triggerEvent({
+        id: `evt-${Date.now()}`,
+        type: "AI_TRADE_OPENED",
+        asset: market.symbol,
+        action: chosenSide,
+        amount: tradeAmount,
+        entry: market.price,
+        demoBalance: currentBal,
+        timestamp: new Date().toISOString(),
+        reasoning,
+      });
+    },
+    [addSystemLog, triggerEvent]
+  );
+
+  // Fast forward simulated trades
   const fastForwardTrades = useCallback(
     (count: number = 5) => {
-      let currentBal = balance;
+      let currentBal = balanceRef.current;
+      const currentMarkets = marketsRef.current;
+      const cfg = configRef.current;
       const newClosed: Trade[] = [];
 
       for (let i = 0; i < count; i++) {
-        const m = markets[i % markets.length];
-        const isWin = Math.random() < 0.72; // ~72% realistic strategy win rate
+        const m = currentMarkets[i % currentMarkets.length];
+        const isWin = Math.random() < 0.72; // ~72% realistic win rate
         const side: TradeSide = Math.random() > 0.4 ? "BUY" : "SELL";
-        const amt = config.tradeAmount;
-        // Result matching prompt's style: +$0.18 on $1 trade, or proportionally on $10 trade
+        const amt = cfg.tradeAmount;
         const ratio = amt / 1.0;
         const pnl = isWin
           ? parseFloat(((0.14 + Math.random() * 0.12) * ratio).toFixed(2))
@@ -443,165 +470,150 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
         `Generated ${count} simulated trades. Current demo balance: $${currentBal.toFixed(2)}`
       );
     },
-    [balance, markets, config.tradeAmount, addSystemLog]
+    [addSystemLog]
   );
 
-  // Main simulation heartbeat: price ticks, scanner status rotation, TP/SL monitoring, and AI automated trading
+  // Main simulation heartbeat: price ticks, scanner status rotation, and position monitoring inside timer
   useEffect(() => {
     const interval = setInterval(() => {
-      // 1. Update Market Prices with realistic Brownian motion
-      setMarkets((prevMarkets) =>
-        prevMarkets.map((market) => {
-          const deltaPct = (Math.random() - 0.495) * 0.0016; // slight drift
-          const newPriceRaw = market.price * (1 + deltaPct);
-          const newPrice = parseFloat(newPriceRaw.toFixed(market.precision));
-          const updatedHistory = [...market.history.slice(-14), newPrice];
+      // 1. Calculate updated markets
+      const nextMarkets = marketsRef.current.map((market) => {
+        const deltaPct = (Math.random() - 0.495) * 0.0016;
+        const newPriceRaw = market.price * (1 + deltaPct);
+        const newPrice = parseFloat(newPriceRaw.toFixed(market.precision));
+        const updatedHistory = [...market.history.slice(-14), newPrice];
 
-          // Scanner status cycling for AI demonstration:
-          // EUR/USD WAIT, GBP/USD ANALYZING, XAU/USD SIGNAL, BTC/USD EXECUTING
-          let nextScanner = market.scannerStatus;
-          const r = Math.random();
-          if (r < 0.22) {
-            const statuses: ScannerStatus[] = [
-              "WAIT",
-              "ANALYZING",
-              "SIGNAL",
-              "EXECUTING",
-            ];
-            const currentIdx = statuses.indexOf(market.scannerStatus);
-            nextScanner = statuses[(currentIdx + 1) % statuses.length];
-          }
-
-          // Dynamic AI Score & Signal
-          const aiScore = Math.min(
-            96,
-            Math.max(45, Math.floor(market.aiScore + (Math.random() * 4 - 2)))
-          );
-          const aiSignal =
-            aiScore > 75
-              ? market.change24h >= 0
-                ? "BUY"
-                : "SELL"
-              : aiScore < 55
-              ? "WAIT"
-              : market.aiSignal;
-
-          return {
-            ...market,
-            prevPrice: market.price,
-            price: newPrice,
-            change24h: parseFloat(
-              (
-                market.change24h +
-                (newPrice > market.price ? 0.01 : -0.01)
-              ).toFixed(2)
-            ),
-            high24h: Math.max(market.high24h, newPrice),
-            low24h: Math.min(market.low24h, newPrice),
-            history: updatedHistory,
-            scannerStatus: nextScanner,
-            aiScore,
-            aiSignal,
-          };
-        })
-      );
-    }, config.tickSpeed);
-
-    return () => clearInterval(interval);
-  }, [config.tickSpeed]);
-
-  // Keep selectedMarket in sync with ticked markets
-  useEffect(() => {
-    const updated = markets.find((m) => m.symbol === selectedMarket.symbol);
-    if (updated) {
-      setSelectedMarket(updated);
-    }
-  }, [markets, selectedMarket.symbol]);
-
-  // 2. Position Monitoring Heartbeat (Checks Stop Loss and Take Profit triggers)
-  useEffect(() => {
-    if (openPositions.length === 0) return;
-
-    setOpenPositions((prevPositions) => {
-      const updated: Position[] = [];
-
-      for (const pos of prevPositions) {
-        const market = markets.find((m) => m.symbol === pos.symbol);
-        if (!market) {
-          updated.push(pos);
-          continue;
+        let nextScanner = market.scannerStatus;
+        if (Math.random() < 0.22) {
+          const statuses: ScannerStatus[] = [
+            "WAIT",
+            "ANALYZING",
+            "SIGNAL",
+            "EXECUTING",
+          ];
+          const currentIdx = statuses.indexOf(market.scannerStatus);
+          nextScanner = statuses[(currentIdx + 1) % statuses.length];
         }
 
-        const currentPrice = market.price;
-        const priceDiff =
-          pos.side === "BUY"
-            ? currentPrice - pos.entryPrice
-            : pos.entryPrice - currentPrice;
+        const aiScore = Math.min(
+          96,
+          Math.max(45, Math.floor(market.aiScore + (Math.random() * 4 - 2)))
+        );
+        const aiSignal =
+          aiScore > 75
+            ? market.change24h >= 0
+              ? "BUY"
+              : "SELL"
+            : aiScore < 55
+            ? "WAIT"
+            : market.aiSignal;
 
-        // Realistic PnL calculation scaled to trade amount
-        // If price moves 0.2%, trade of $10 gains $0.20 * leverage factor (~10x scalping factor)
-        const priceMovePct = priceDiff / pos.entryPrice;
-        const leverageMultiplier = 90; // simulates institutional CFD/FX scalping tick value
-        const rawPnl = pos.amount * priceMovePct * leverageMultiplier;
-        const pnl = parseFloat(rawPnl.toFixed(2));
-        const pnlPercent = parseFloat(((pnl / pos.amount) * 100).toFixed(1));
+        return {
+          ...market,
+          prevPrice: market.price,
+          price: newPrice,
+          change24h: parseFloat(
+            (
+              market.change24h +
+              (newPrice > market.price ? 0.01 : -0.01)
+            ).toFixed(2)
+          ),
+          high24h: Math.max(market.high24h, newPrice),
+          low24h: Math.min(market.low24h, newPrice),
+          history: updatedHistory,
+          scannerStatus: nextScanner,
+          aiScore,
+          aiSignal,
+        };
+      });
 
-        // Check Take Profit or Stop Loss
-        const hitTP =
-          pos.side === "BUY"
-            ? currentPrice >= pos.takeProfit
-            : currentPrice <= pos.takeProfit;
+      setMarkets(nextMarkets);
 
-        const hitSL =
-          pos.side === "BUY"
-            ? currentPrice <= pos.stopLoss
-            : currentPrice >= pos.stopLoss;
+      // 2. Monitor open positions against updated market prices
+      const currentPositions = openPositionsRef.current;
+      if (currentPositions.length > 0) {
+        const positionsToClose: { id: string; reason: Trade["closeReason"] }[] = [];
 
-        if (hitTP || hitSL) {
-          // Close position on next tick
-          setTimeout(() => {
-            closePosition(pos.id, hitTP ? "TAKE_PROFIT" : "STOP_LOSS");
-          }, 100);
-        } else {
-          updated.push({
-            ...pos,
-            currentPrice,
-            pnl,
-            pnlPercent,
+        setOpenPositions((prev) => {
+          return prev.map((pos) => {
+            const m = nextMarkets.find((item) => item.symbol === pos.symbol);
+            if (!m) return pos;
+
+            const currentPrice = m.price;
+            const priceDiff =
+              pos.side === "BUY"
+                ? currentPrice - pos.entryPrice
+                : pos.entryPrice - currentPrice;
+
+            const priceMovePct = priceDiff / pos.entryPrice;
+            const leverageMultiplier = 90;
+            const rawPnl = pos.amount * priceMovePct * leverageMultiplier;
+            const pnl = parseFloat(rawPnl.toFixed(2));
+            const pnlPercent = parseFloat(((pnl / pos.amount) * 100).toFixed(1));
+
+            const hitTP =
+              pos.side === "BUY"
+                ? currentPrice >= pos.takeProfit
+                : currentPrice <= pos.takeProfit;
+
+            const hitSL =
+              pos.side === "BUY"
+                ? currentPrice <= pos.stopLoss
+                : currentPrice >= pos.stopLoss;
+
+            if (hitTP || hitSL) {
+              positionsToClose.push({
+                id: pos.id,
+                reason: hitTP ? "TAKE_PROFIT" : "STOP_LOSS",
+              });
+            }
+
+            return {
+              ...pos,
+              currentPrice,
+              pnl,
+              pnlPercent,
+            };
+          });
+        });
+
+        // Trigger exits outside of the reducer
+        if (positionsToClose.length > 0) {
+          positionsToClose.forEach(({ id, reason }) => {
+            closePosition(id, reason);
           });
         }
       }
+    }, config.tickSpeed);
 
-      return updated;
-    });
-  }, [markets, closePosition, openPositions.length]);
+    return () => clearInterval(interval);
+  }, [config.tickSpeed, closePosition]);
 
-  // 3. AI Autonomous Trader execution loop
+  // AI Autonomous Trader execution loop
   useEffect(() => {
     if (!config.aiEnabled) return;
 
-    // Run AI scanning evaluation every 3.5 seconds
     const aiInterval = setInterval(() => {
-      // Check if open trades limit reached
-      if (openPositions.length >= config.maxOpenTrades) {
+      const curPositions = openPositionsRef.current;
+      const cfg = configRef.current;
+      const curMarkets = marketsRef.current;
+
+      if (curPositions.length >= cfg.maxOpenTrades) {
         return;
       }
 
-      // Find an enabled market with an active "SIGNAL" or "EXECUTING" status and high AI score
-      const signalMarkets = markets.filter(
+      const signalMarkets = curMarkets.filter(
         (m) =>
-          config.enabledMarkets.includes(m.symbol) &&
+          cfg.enabledMarkets.includes(m.symbol) &&
           (m.scannerStatus === "SIGNAL" || m.scannerStatus === "EXECUTING") &&
           m.aiScore >= 74
       );
 
       if (signalMarkets.length > 0) {
-        // Pick the highest scoring market
         signalMarkets.sort((a, b) => b.aiScore - a.aiScore);
         const target = signalMarkets[0];
 
-        // Ensure we don't already have an open trade on this exact symbol
-        const alreadyOpen = openPositions.some((p) => p.symbol === target.symbol);
+        const alreadyOpen = curPositions.some((p) => p.symbol === target.symbol);
         if (!alreadyOpen) {
           triggerAiTrade(
             target.symbol,
@@ -612,21 +624,14 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
     }, 3200);
 
     return () => clearInterval(aiInterval);
-  }, [
-    config.aiEnabled,
-    config.maxOpenTrades,
-    config.enabledMarkets,
-    markets,
-    openPositions,
-    triggerAiTrade,
-  ]);
+  }, [config.aiEnabled, triggerAiTrade]);
 
   // Config actions
   const toggleAiTrading = useCallback(
     (enabled?: boolean) => {
       setConfig((prev) => {
         const next = enabled !== undefined ? enabled : !prev.aiEnabled;
-        if (config.soundEnabled) sfx.click();
+        if (configRef.current.soundEnabled) sfx.click();
         addSystemLog(
           "AI",
           "AI_DECISION",
@@ -637,7 +642,7 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
         return { ...prev, aiEnabled: next };
       });
     },
-    [config.soundEnabled, addSystemLog]
+    [addSystemLog]
   );
 
   const setTradeAmount = useCallback((amount: number) => {
@@ -668,31 +673,34 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const selectMarket = useCallback((market: Market) => {
-    setSelectedMarket(market);
+    setSelectedSymbol(market.symbol);
   }, []);
 
-  // Withdrawal logic (Prototype demo simulation)
+  // Withdrawal logic
   const submitWithdrawal = useCallback(
     (
       amount: number,
       method: WithdrawalRequest["method"],
       destination: string
     ) => {
+      const curAvailable = available;
+      const curBalance = balanceRef.current;
+      const cfg = configRef.current;
+
       if (amount <= 0) {
         return { success: false, message: "Please enter a valid amount greater than $0." };
       }
-      if (amount > available) {
+      if (amount > curAvailable) {
         return {
           success: false,
-          message: `Insufficient available funds. Current available: $${available.toFixed(2)}`,
+          message: `Insufficient available funds. Current available: $${curAvailable.toFixed(2)}`,
         };
       }
       if (!destination || destination.trim().length < 4) {
         return { success: false, message: "Please enter valid payment details." };
       }
 
-      // Deduct from demo balance
-      const newBalance = parseFloat((balance - amount).toFixed(2));
+      const newBalance = parseFloat((curBalance - amount).toFixed(2));
       setBalance(newBalance);
 
       const request: WithdrawalRequest = {
@@ -707,7 +715,7 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
 
       setWithdrawalRequests((prev) => [request, ...prev]);
 
-      if (config.soundEnabled) {
+      if (cfg.soundEnabled) {
         sfx.cashout();
       }
 
@@ -725,7 +733,7 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
         request,
       };
     },
-    [available, balance, config.soundEnabled, addSystemLog]
+    [available, addSystemLog]
   );
 
   const cancelWithdrawal = useCallback(
@@ -733,7 +741,6 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
       const req = withdrawalRequests.find((r) => r.id === id);
       if (!req || req.status !== "PENDING") return;
 
-      // Restore demo balance
       setBalance((prev) => parseFloat((prev + req.amount).toFixed(2)));
       setWithdrawalRequests((prev) =>
         prev.map((r) => (r.id === id ? { ...r, status: "CANCELLED" } : r))
@@ -785,7 +792,7 @@ export function TradingEngineProvider({ children }: { children: ReactNode }) {
     );
   }, [addSystemLog]);
 
-  // Dynamic Calculated Statistics
+  // Statistics
   const totalTrades = closedTrades.length;
   const winningTrades = closedTrades.filter((t) => t.isWin).length;
   const losingTrades = closedTrades.filter((t) => !t.isWin).length;
