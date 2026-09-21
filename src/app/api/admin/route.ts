@@ -6,6 +6,7 @@ import {
   withdrawalReviewSchema,
 } from "@/lib/server/withdrawals";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 const uidSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 async function admin(request: Request) {
   const identity = await verifyRequest(request);

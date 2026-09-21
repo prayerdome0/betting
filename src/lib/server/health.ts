@@ -1,11 +1,20 @@
-import { db, requireServerIdentity } from "./firebase";
+import {
+  db,
+  identityDiagnostics,
+  identityFailureMessage,
+  requireServerIdentity,
+} from "./firebase";
 import { heartbeatFresh } from "./invariants";
-import type { ServiceHealth } from "../trading/status";
-// Public diagnostics contain readiness booleans, never credentials, raw errors,
-// user records, deployment identity names, or system event contents.
+import type { IdentityHint, ServiceHealth } from "../trading/status";
+// Public diagnostics contain readiness booleans and non-secret configuration
+// hints — never credentials, key material, service account emails, raw errors,
+// user records, or system event contents.
 export async function getServiceHealth(): Promise<ServiceHealth> {
+  const diagnostics = identityDiagnostics();
   const result: ServiceHealth = {
     configured: false,
+    identitySource: diagnostics.source,
+    identityHint: diagnostics.hint,
     workerOnline: false,
     feedFresh: false,
     heartbeatAt: null,
@@ -16,13 +25,23 @@ export async function getServiceHealth(): Promise<ServiceHealth> {
       : "FIREBASE",
     status: "SERVER_IDENTITY_REQUIRED",
     message:
-      "Server Firebase access is not ready. Configure Application Default Credentials or a complete, isolated emulator environment.",
+      diagnostics.hint === "READY"
+        ? "Server Firebase access is not ready. Configure a server credential (FIREBASE_SERVICE_ACCOUNT_JSON, FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY, or Application Default Credentials) or a complete, isolated emulator environment."
+        : identityFailureMessage(diagnostics.hint),
     checks: { identity: false, database: false, worker: false, feed: false },
   };
   try {
     await requireServerIdentity();
     result.checks.identity = true;
-  } catch {
+  } catch (error) {
+    // Report the real reason (missing credential, project mismatch, rejected
+    // key) instead of a generic "not ready": this is the first thing an
+    // operator sees when accounts cannot be created after sign-up.
+    const hint = (error as { hint?: IdentityHint }).hint;
+    if (hint) {
+      result.identityHint = hint;
+      result.message = identityFailureMessage(hint);
+    }
     result.serverTime = Date.now();
     return result;
   }

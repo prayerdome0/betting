@@ -2,6 +2,7 @@
 import { Check, Clock3, Server, ShieldCheck, WifiOff } from "lucide-react";
 import type { ServiceHealth } from "@/lib/trading/status";
 import { Badge, date, PanelHead } from "./ui";
+import { IDENTITY_SOURCE_LABEL } from "@/lib/trading/status";
 export default function SystemStatus({
   health,
   connection,
@@ -11,12 +12,13 @@ export default function SystemStatus({
   connection: string;
   browserOnline: boolean;
 }) {
+  const identityNote = health
+    ? health.identitySource
+      ? `Source: ${IDENTITY_SOURCE_LABEL[health.identitySource] ?? health.identitySource}`
+      : "Hosting-side Firebase credentials"
+    : "Hosting-side Firebase credentials";
   const checks = [
-    [
-      "Server identity",
-      health?.checks.identity,
-      "Hosting-side Firebase credentials",
-    ],
+    ["Server identity", health?.checks.identity, identityNote],
     ["Firestore access", health?.checks.database, "Persistent source of truth"],
     [
       "Independent worker",
@@ -81,8 +83,13 @@ export default function SystemStatus({
                 Firebase Console.
               </li>
               <li>
-                Configure server Application Default Credentials through your
-                hosting provider. Never enter Admin keys in this website.
+                Give the server a Firebase identity: set{" "}
+                <code>FIREBASE_SERVICE_ACCOUNT_JSON</code> (or{" "}
+                <code>FIREBASE_CLIENT_EMAIL</code> +{" "}
+                <code>FIREBASE_PRIVATE_KEY</code>) in your hosting environment,
+                or attach Application Default Credentials. Without it, sign-in
+                succeeds but accounts can never be created. Never enter Admin
+                keys in this website.
               </li>
               <li>
                 Deploy <code>firestore.rules</code> and{" "}
