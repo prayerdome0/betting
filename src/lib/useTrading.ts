@@ -20,6 +20,16 @@ import type {
   Trade,
   Withdrawal,
 } from "./trading/types";
+import {
+  readAccount,
+  readActivity,
+  readCollection,
+  readFeed,
+  readLedgerEntry,
+  readSession,
+  readTrade,
+  readWithdrawal,
+} from "./trading/documents";
 import type { ServiceHealth } from "./trading/status";
 import { connectionLabel } from "./trading/status";
 import { useOnline } from "./useOnline";
@@ -132,6 +142,15 @@ function describeInitializeFailure(error: unknown) {
   return message;
 }
 
+/**
+ * Shown when `users/{uid}` exists but cannot be this application's simulation
+ * account (no balance, another application's fields, a project mix-up). The
+ * workspace stays usable and explains itself instead of crashing on a document
+ * it cannot interpret — and it never displays a balance it did not read.
+ */
+const ACCOUNT_DOCUMENT_PROBLEM =
+  "A document exists in your Firestore account path, but it is not a Nexus simulation account, so it cannot be shown or traded. No funds were changed. Check that this deployment points at the correct Firebase project, and contact the operator if this persists.";
+
 const INITIALIZE_ATTEMPTS = 5;
 const INITIALIZE_BASE_DELAY_MS = 2000;
 const INITIALIZE_MAX_DELAY_MS = 30000;
@@ -140,6 +159,7 @@ export function useTrading(user: User | null) {
   const online = useOnline();
   const [fromCache, setFromCache] = useState(true);
   const [connectionFailed, setConnectionFailed] = useState(false);
+  const [documentProblem, setDocumentProblem] = useState("");
   const [account, setAccount] = useState<Account | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -206,9 +226,21 @@ export function useTrading(user: User | null) {
     const initialize = async () => {
       if (!active || accountLoaded) return;
       try {
-        await api(user, "/api/command", { action: "initialize" });
+        // Initialization is also the server-side repair point: a stored
+        // document written by an earlier release is healed and audited here,
+        // and its explanation is shown to the user rather than swallowed.
+        const result = await api(user, "/api/command", {
+          action: "initialize",
+        });
         bootstrapError = false;
-        if (active) setError("");
+        if (active) {
+          setError("");
+          if (
+            typeof result.message === "string" &&
+            result.message !== "Account is ready."
+          )
+            setNotice(result.message);
+        }
       } catch (e) {
         if (!active || accountLoaded) return;
         bootstrapError = true;
@@ -230,13 +262,18 @@ export function useTrading(user: User | null) {
         doc(db, root),
         { includeMetadataChanges: true },
         (s) => {
-          const exists = s.exists();
-          if (exists) accountLoaded = true;
-          setAccount(exists ? (s.data() as Account) : null);
+          const stored = s.exists() ? readAccount(s.data(), user.uid) : null;
+          // An unusable document is not an account: retrying the server
+          // bootstrap is what repairs it, so `accountLoaded` stays false.
+          if (stored) accountLoaded = true;
+          setAccount(stored);
           setFromCache(s.metadata.fromCache);
           if (!s.metadata.fromCache) setConnectionFailed(false);
+          setDocumentProblem(
+            s.exists() && !stored ? ACCOUNT_DOCUMENT_PROBLEM : "",
+          );
           // The account exists, so a stale bootstrap complaint is no longer true.
-          if (exists && bootstrapError) {
+          if (stored && bootstrapError) {
             bootstrapError = false;
             setError("");
           }
@@ -249,12 +286,12 @@ export function useTrading(user: User | null) {
           orderBy("startedAt", "desc"),
           limit(100),
         ),
-        (s) => setSessions(s.docs.map((d) => d.data() as Session)),
+        (s) => setSessions(readCollection<Session>(s.docs, readSession)),
         fail,
       ),
       onSnapshot(
         query(collection(db, `${root}/trades`), where("status", "==", "OPEN")),
-        (s) => setPositions(s.docs.map((d) => d.data() as Trade)),
+        (s) => setPositions(readCollection<Trade>(s.docs, readTrade)),
         fail,
       ),
       onSnapshot(
@@ -263,7 +300,7 @@ export function useTrading(user: User | null) {
           orderBy("sequence", "desc"),
           limit(100),
         ),
-        (s) => setActivity(s.docs.map((d) => d.data() as Activity)),
+        (s) => setActivity(readCollection<Activity>(s.docs, readActivity)),
         fail,
       ),
       onSnapshot(
@@ -272,7 +309,7 @@ export function useTrading(user: User | null) {
           orderBy("sequence", "desc"),
           limit(100),
         ),
-        (s) => setLedger(s.docs.map((d) => d.data() as LedgerEntry)),
+        (s) => setLedger(readCollection<LedgerEntry>(s.docs, readLedgerEntry)),
         fail,
       ),
       onSnapshot(
@@ -281,12 +318,13 @@ export function useTrading(user: User | null) {
           orderBy("createdAt", "desc"),
           limit(100),
         ),
-        (s) => setWithdrawals(s.docs.map((d) => d.data() as Withdrawal)),
+        (s) =>
+          setWithdrawals(readCollection<Withdrawal>(s.docs, readWithdrawal)),
         fail,
       ),
       onSnapshot(
         doc(db, "system/market"),
-        (s) => setFeed(s.exists() ? (s.data() as Feed) : null),
+        (s) => setFeed(s.exists() ? readFeed(s.data()) : null),
         fail,
       ),
     ];
@@ -308,7 +346,8 @@ export function useTrading(user: User | null) {
         limit(tradeLimit),
       ),
       (snapshot) => {
-        setTrades(snapshot.docs.map((d) => d.data() as Trade));
+        const loaded = readCollection<Trade>(snapshot.docs, readTrade);
+        setTrades(loaded);
         setHasMore(snapshot.size === tradeLimit);
       },
       (error) => setError(`Firestore: ${error.message}`),
@@ -350,7 +389,7 @@ export function useTrading(user: User | null) {
             online,
             fromCache,
             accountExists: !!account,
-            failed: connectionFailed,
+            failed: connectionFailed || !!documentProblem,
           }),
     connected: online && !fromCache && !connectionFailed,
     browserOnline: online,
@@ -364,6 +403,7 @@ export function useTrading(user: User | null) {
     feed,
     health,
     error,
+    accountProblem: documentProblem,
     setError,
     busy,
     notice,

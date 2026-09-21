@@ -6,6 +6,7 @@ import { executeCommand } from "../src/lib/server/commands";
 import { recordSessionFailure } from "../src/lib/server/worker-errors";
 import { processSession } from "../src/lib/server/engine";
 import { reviewWithdrawal } from "../src/lib/server/withdrawals";
+import { ApiError } from "../src/lib/server/firebase";
 import {
   DEFAULT_SETTINGS,
   type Account,
@@ -625,5 +626,106 @@ test("expiry is recorded as completed even when the final quote also crosses the
   assert.equal(session.stopReason, "DURATION_EXPIRED");
   assert.ok(session.totalPnlCents < 0);
   assert.equal(f.account().activeSessionId, null);
+  f.reconcile();
+});
+
+test("a stored account without settings is repaired from the legacy projection and can trade again", async () => {
+  const f = await fixture();
+  const original = f.account();
+  // What an earlier release left behind: everything but the settings object,
+  // which was projected to users/{uid}/settings/trading instead.
+  const stored: Record<string, unknown> = { ...original };
+  delete stored.settings;
+  f.store.seed(f.user, stored);
+
+  const result = await f.call({ action: "initialize" });
+  assert.match(
+    result.message,
+    /restored/i,
+    "the caller is told that stored preferences were restored",
+  );
+  assert.deepEqual(
+    f.account().settings,
+    original.settings,
+    "the user's real preferences are recovered, not defaulted away",
+  );
+  assert.deepEqual(
+    f.store.read(`${f.user}/settings/trading`),
+    original.settings,
+    "the projection is written back consistently",
+  );
+  assert.ok(
+    f.store
+      .list<{ kind: string; message: string }>(`${f.user}/activity`)
+      .some((e) => e.kind === "ACCOUNT" && /restored/i.test(e.message)),
+    "the repair is part of the audit timeline",
+  );
+
+  // The account is fully usable again: a session starts and opens a position.
+  await f.call({ action: "start", durationSeconds: 300 });
+  f.advance();
+  await f.tick();
+  assert.equal(f.store.list<Trade>(`${f.user}/trades`)[0].amountCents, 10000);
+  assert.equal(f.account().activeSessionId !== null, true);
+  f.reconcile();
+});
+
+test("with no usable settings anywhere, documented defaults are restored and disclosed", async () => {
+  const f = await fixture();
+  const stored: Record<string, unknown> = { ...f.account() };
+  delete stored.settings;
+  f.store.seed(f.user, stored);
+  // A legacy projection that is itself unusable must not be half-adopted.
+  f.store.seed(`${f.user}/settings/trading`, { market: "EUR/USD" });
+  const result = await f.call({ action: "initialize" });
+  assert.match(result.message, /defaults/i);
+  assert.deepEqual(f.account().settings, DEFAULT_SETTINGS);
+  f.reconcile();
+});
+
+test("an account document without balances is refused with a clear reason and left untouched", async () => {
+  const f = await fixture();
+  const stored: Record<string, unknown> = { ...f.account() };
+  delete stored.balanceCents;
+  f.store.seed(f.user, stored);
+  const before = f.store.dump();
+  await assert.rejects(
+    f.call({ action: "balance", balanceCents: 20000 }),
+    (error: unknown) =>
+      error instanceof ApiError &&
+      error.status === 409 &&
+      /incomplete or inconsistent/.test(error.message),
+    "a data problem is reported as a data problem, not as a server outage",
+  );
+  assert.deepEqual(
+    f.store.dump(),
+    before,
+    "no balance, ledger entry or receipt was invented",
+  );
+});
+
+test("a session without a settings snapshot is restored from the account instead of blocking forever", async () => {
+  const f = await fixture();
+  await f.call({ action: "start", durationSeconds: 300 });
+  const session = f.session();
+  const stored: Record<string, unknown> = { ...session };
+  delete stored.settings;
+  f.store.seed(`${f.user}/tradingSessions/${session.id}`, stored);
+  f.advance();
+
+  await f.tick();
+  assert.deepEqual(f.session().settings, f.account().settings);
+  assert.equal(f.session().strategy, f.account().settings.strategy);
+  assert.equal(
+    f.store.list<Trade>(`${f.user}/trades`)[0].amountCents,
+    10000,
+    "the session keeps trading with the account's risk limits",
+  );
+  assert.ok(
+    f.store
+      .list<{ kind: string }>(`${f.user}/activity`)
+      .some((e) => e.kind === "SETTINGS"),
+    "the restored snapshot is recorded",
+  );
   f.reconcile();
 });
