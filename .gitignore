@@ -31,4 +31,4 @@ next-env.d.ts
 drizzle/
 
 # webhook event store (local dev)
-data/
+/data/

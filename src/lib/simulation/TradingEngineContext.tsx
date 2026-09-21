@@ -21,7 +21,7 @@ import {
   TradeSide,
   ScannerStatus,
 } from "@/types/trading";
-import { INITIAL_MARKETS } from "@/data/initialMarkets";
+import { INITIAL_MARKETS } from "./initialMarkets";
 import { INITIAL_CLOSED_TRADES } from "./initialData";
 import { generateAIReasoning } from "./strategy";
 import sfx from "@/lib/sound";

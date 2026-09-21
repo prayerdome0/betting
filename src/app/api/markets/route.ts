@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { INITIAL_MARKETS } from "@/data/initialMarkets";
+import { INITIAL_MARKETS } from "@/lib/simulation/initialMarkets";
 
 export async function GET() {
   // Return current market quotes with dynamic simulated drift
