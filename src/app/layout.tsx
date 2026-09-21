@@ -3,9 +3,9 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Xacheus Betting | Real Odds Sportsbook & Casino",
+  title: "X-Trader AI | Autonomous Trading Command Center",
   description:
-    "Xacheus Betting — real bookmaker odds via The Odds API, instant casino games, sounds, and live settlement. Demo platform: 18+, play responsibly.",
+    "A paper-first AI trading dashboard with deterministic signals, risk controls, market scanning, and auditable trade decisions.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
