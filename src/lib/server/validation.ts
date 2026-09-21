@@ -1,19 +1,44 @@
 import { z } from "zod";
 import { SYMBOLS } from "../trading/types";
+// Bounds live with the Firestore read boundary so the values the server
+// accepts and the values it considers readable can never drift apart.
+import { SETTINGS_BOUNDS } from "../trading/documents";
+
 export const settingsSchema = z
   .object({
     strategy: z.enum(["MOMENTUM", "MEAN_REVERSION"]),
     markets: z
       .array(z.enum(SYMBOLS))
       .min(1)
-      .max(4)
+      .max(SYMBOLS.length)
       .refine((v) => new Set(v).size === v.length),
-    tradeAmountCents: z.number().int().min(100).max(2500000),
-    maxPositions: z.number().int().min(1).max(4),
-    stopLossPct: z.number().min(0.05).max(5),
-    takeProfitPct: z.number().min(0.05).max(10),
-    maxHoldSeconds: z.number().int().min(20).max(3600),
-    maxSessionLossPct: z.number().min(1).max(25),
+    tradeAmountCents: z
+      .number()
+      .int()
+      .min(SETTINGS_BOUNDS.tradeAmountCents.min)
+      .max(SETTINGS_BOUNDS.tradeAmountCents.max),
+    maxPositions: z
+      .number()
+      .int()
+      .min(SETTINGS_BOUNDS.maxPositions.min)
+      .max(SETTINGS_BOUNDS.maxPositions.max),
+    stopLossPct: z
+      .number()
+      .min(SETTINGS_BOUNDS.stopLossPct.min)
+      .max(SETTINGS_BOUNDS.stopLossPct.max),
+    takeProfitPct: z
+      .number()
+      .min(SETTINGS_BOUNDS.takeProfitPct.min)
+      .max(SETTINGS_BOUNDS.takeProfitPct.max),
+    maxHoldSeconds: z
+      .number()
+      .int()
+      .min(SETTINGS_BOUNDS.maxHoldSeconds.min)
+      .max(SETTINGS_BOUNDS.maxHoldSeconds.max),
+    maxSessionLossPct: z
+      .number()
+      .min(SETTINGS_BOUNDS.maxSessionLossPct.min)
+      .max(SETTINGS_BOUNDS.maxSessionLossPct.max),
   })
   .strict();
 export const commandSchema = z.discriminatedUnion("action", [

@@ -16,6 +16,26 @@ import {
   readClock,
   type Clock,
 } from "./invariants";
+import {
+  restoreAccountSettings,
+  restoreSessionSettings,
+  restorationMessage,
+  type SettingsRestoration,
+} from "./repair";
+
+/**
+ * Document invariants throw plain `Error`s. Turning them into an `ApiError`
+ * keeps the real reason in front of the caller: a stored document that cannot
+ * be trusted is a data problem with an actionable explanation, not the
+ * "Firebase server unavailable" infrastructure message it used to become.
+ */
+function documentProblem(error: unknown, scope: "account" | "session") {
+  const detail = error instanceof Error ? error.message : "invariant failed";
+  return new ApiError(
+    409,
+    `This ${scope} document is incomplete or inconsistent, so the command was blocked to protect your simulated funds. No balance or history was changed. (${detail})`,
+  );
+}
 function fingerprint(command: Command) {
   const canonical = (value: unknown): unknown =>
     Array.isArray(value)
@@ -167,9 +187,18 @@ export async function executeCommand(
       return result;
     }
     const account = accountSnap.data() as Account;
-    assertAccount(account, user.id);
     if (account.accountType !== "SIMULATION" || account.status !== "ACTIVE")
       throw new ApiError(403, "This is not an active simulation account.");
+    // Documents written by an earlier release may have no settings object at
+    // all; the account must be usable (and its risk limits knowable) before any
+    // command can be executed against it.
+    const notes: string[] = [];
+    const accountRestoration = await restoreAccountSettings(tx, user, account);
+    try {
+      assertAccount(account, user.id);
+    } catch (error) {
+      throw documentProblem(error, "account");
+    }
     const sessionRef = account.activeSessionId
       ? user.collection("tradingSessions").doc(account.activeSessionId)
       : null;
@@ -182,7 +211,15 @@ export async function executeCommand(
         409,
         "The active session is missing. Execution is blocked pending inspection.",
       );
-    if (session) assertSession(session, user.id, account.activeSessionId!);
+    let sessionRestoration: SettingsRestoration | null = null;
+    if (session) {
+      sessionRestoration = restoreSessionSettings(session, account);
+      try {
+        assertSession(session, user.id, account.activeSessionId!);
+      } catch (error) {
+        throw documentProblem(error, "session");
+      }
+    }
     const withdrawalRef =
       command.action === "cancelWithdrawal"
         ? user.collection("withdrawals").doc(command.id)
@@ -193,6 +230,19 @@ export async function executeCommand(
         ? await tx.get(store.doc("system/worker"))
         : null;
     now = readClock(clock); // Firestore retries/reads must not freeze a session deadline.
+    // Every read is done: repairs are written and audited here, before the
+    // command's own transaction work.
+    if (accountRestoration) {
+      notes.push(restorationMessage(accountRestoration, "account"));
+      event(tx, user, null, "ACCOUNT", notes.at(-1)!, now, account);
+    }
+    if (sessionRestoration && session && sessionRef) {
+      notes.push(restorationMessage(sessionRestoration, "session"));
+      event(tx, user, session.id, "SETTINGS", notes.at(-1)!, now, account);
+      // Persist the snapshot: not every command below rewrites the session, and
+      // a repair that lived only in memory would be a false audit record.
+      tx.set(sessionRef, session);
+    }
     let message = "Account is ready.";
     switch (command.action) {
       case "initialize":
@@ -364,7 +414,12 @@ export async function executeCommand(
     }
     account.updatedAt = now;
     saveAccount(tx, user, account);
-    const result = { message };
+    // The repaired document is part of the command result, so the client can
+    // tell the user that stored preferences were restored instead of silently
+    // trading with different settings.
+    const result = {
+      message: notes.length ? `${message} ${notes.join(" ")}` : message,
+    };
     tx.set(receipt, {
       result,
       timestamp: now,

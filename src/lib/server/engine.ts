@@ -11,6 +11,11 @@ import {
 import { db } from "./firebase";
 import { event, ledger, saveAccount } from "./commands";
 import {
+  restoreAccountSettings,
+  restoreSessionSettings,
+  restorationMessage,
+} from "./repair";
+import {
   analyze,
   calculatePnl,
   exitReason,
@@ -52,6 +57,10 @@ export async function processSession(
       throw new Error("Active session document is missing; execution blocked.");
     const now = readClock(clock);
     const account = a.data() as Account;
+    // A stored document from an earlier release may have no settings object.
+    // The worker refuses to trade without risk limits, so it restores them here
+    // (recorded below) instead of failing every tick forever.
+    const accountRestoration = await restoreAccountSettings(tx, user, account);
     assertAccount(account, userId);
     const session = s.data() as Session;
     if (
@@ -59,9 +68,38 @@ export async function processSession(
       !["ACTIVE", "PAUSED", "STOPPING"].includes(session.status)
     )
       return;
+    const sessionRestoration = restoreSessionSettings(session, account);
     assertSession(session, userId, sessionId);
+    if (accountRestoration)
+      event(
+        tx,
+        user,
+        null,
+        "ACCOUNT",
+        restorationMessage(accountRestoration, "account"),
+        now,
+        account,
+      );
+    if (sessionRestoration)
+      event(
+        tx,
+        user,
+        session.id,
+        "SETTINGS",
+        restorationMessage(sessionRestoration, "session"),
+        now,
+        account,
+      );
     assertFeed(feed, now, session.settings.markets);
-    if (session.lastTickAt >= feed.updatedAt) return; // Retries/multiple workers cannot execute a quote twice.
+    if (session.lastTickAt >= feed.updatedAt) {
+      // Retries/multiple workers cannot execute a quote twice, but a repair
+      // found during the retry still has to be persisted with its audit event.
+      if (accountRestoration || sessionRestoration) {
+        saveAccount(tx, user, account);
+        tx.set(sessionRef, session);
+      }
+      return;
+    }
     const cfg = session.settings;
     const positions = p.docs.map((d) => d.data() as Trade);
     assertPositions(positions, account, sessionId);

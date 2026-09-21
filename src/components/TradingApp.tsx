@@ -111,6 +111,7 @@ function Workspace({
     feed,
     health,
     error,
+    accountProblem,
     busy,
     command,
     notice,
@@ -257,6 +258,11 @@ function Workspace({
     link.download = "nexus-simulated-trades.csv";
     link.click();
     URL.revokeObjectURL(url);
+  }
+  // A price that a document never recorded is shown as a dash, never as a
+  // fabricated level.
+  function level(value: number) {
+    return Number.isFinite(value) && value > 0 ? value.toPrecision(8) : "—";
   }
   const sessionCard = (
     <SessionControl
@@ -692,6 +698,14 @@ function Workspace({
               >
                 <X size={16} />
               </button>
+            </div>
+          )}
+          {accountProblem && (
+            // A stored document that is not a simulation account is a
+            // persistent state, not a transient error: it is explained instead
+            // of crashing the workspace, and no balance is invented for it.
+            <div className="alert error" role="alert">
+              <span>{accountProblem}</span>
             </div>
           )}
           {isEmulator && (
@@ -1362,10 +1376,10 @@ function Workspace({
               ["Entry price", trade.entryPrice],
               ["Exit / current price", trade.exitPrice ?? trade.currentPrice],
               ["Allocation", money(trade.amountCents)],
-              ["Quantity", trade.quantity.toPrecision(8)],
+              ["Quantity", level(trade.quantity)],
               ["Fees", money(trade.feesCents)],
-              ["Stop loss", trade.stopLoss.toPrecision(8)],
-              ["Take profit", trade.takeProfit.toPrecision(8)],
+              ["Stop loss", level(trade.stopLoss)],
+              ["Take profit", level(trade.takeProfit)],
               ["Opened", date(trade.startedAt)],
               ["Closed", date(trade.endedAt)],
               ["Result", trade.result || "OPEN"],
