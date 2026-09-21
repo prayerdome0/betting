@@ -9,6 +9,7 @@ import {
 } from "../trading/types";
 import type { Command } from "./validation";
 import type { Firestore } from "firebase-admin/firestore";
+import { accountPath, WORKER_DOCUMENT, workQueuePath } from "../trading/paths";
 import {
   assertAccount,
   assertSession,
@@ -124,7 +125,7 @@ export async function executeCommand(
   store: Firestore = db(),
 ) {
   const requestFingerprint = fingerprint(command);
-  const user = store.doc(`users/${identity.uid}`);
+  const user = store.doc(accountPath(identity.uid));
   const receipt = user.collection("commands").doc(key);
   return store.runTransaction(async (tx) => {
     const [accountSnap, receiptSnap] = await Promise.all([
@@ -227,7 +228,7 @@ export async function executeCommand(
     const withdrawalSnap = withdrawalRef ? await tx.get(withdrawalRef) : null;
     const healthSnap =
       command.action === "start" || command.action === "resume"
-        ? await tx.get(store.doc("system/worker"))
+        ? await tx.get(store.doc(WORKER_DOCUMENT))
         : null;
     now = readClock(clock); // Firestore retries/reads must not freeze a session deadline.
     // Every read is done: repairs are written and audited here, before the
@@ -295,7 +296,7 @@ export async function executeCommand(
           stopReason: null,
         };
         tx.create(user.collection("tradingSessions").doc(id), next);
-        tx.set(store.doc(`workQueue/${user.id}`), {
+        tx.set(store.doc(workQueuePath(user.id)), {
           userId: user.id,
           sessionId: id,
         });

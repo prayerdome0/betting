@@ -11,6 +11,7 @@ import {
   where,
 } from "firebase/firestore";
 import { getDbInstance } from "./firebase";
+import { accountPath, MARKET_DOCUMENT } from "./trading/paths";
 import type {
   Account,
   Activity,
@@ -81,6 +82,12 @@ function describeResponse(response: Response, text: string) {
       .trim();
     if (plain) return plain.slice(0, 240);
   }
+  // An empty 5xx body is what a server that failed *before* it could answer
+  // looks like (Next.js answers an exception that escapes a route handler with
+  // a bodiless 500; a gateway whose upstream died does the same). Say so, and
+  // point at where the reason is, instead of a bare status code.
+  if (response.status >= 500)
+    return `The server failed before it could answer (HTTP ${response.status}) — no result was returned. The server logs and GET /api/health show the reason.`;
   return `Request failed (HTTP ${response.status}).`;
 }
 
@@ -138,18 +145,21 @@ function describeInitializeFailure(error: unknown) {
   const status = (error as ApiFailure).status;
   if (status === 401) return `${message} Sign in again to continue.`;
   if (status && status >= 500)
-    return `Your account could not be created yet — the server rejected the request. ${message}`;
+    return `Your account could not be created yet — the server could not complete the request. ${message}`;
   return message;
 }
 
 /**
- * Shown when `users/{uid}` exists but cannot be this application's simulation
- * account (no balance, another application's fields, a project mix-up). The
- * workspace stays usable and explains itself instead of crashing on a document
- * it cannot interpret — and it never displays a balance it did not read.
+ * Shown when the account document exists but cannot be this application's
+ * simulation account (no balance, another application's fields, a project
+ * mix-up). The workspace stays usable and explains itself instead of crashing
+ * on a document it cannot interpret — and it never displays a balance it did
+ * not read. Since Nexus keeps its documents under its own `apps/nexus`
+ * namespace, this can no longer be caused by another application's profile at
+ * `users/{uid}`; it points at hand-edited data or a project mix-up.
  */
-const ACCOUNT_DOCUMENT_PROBLEM =
-  "A document exists in your Firestore account path, but it is not a Nexus simulation account, so it cannot be shown or traded. No funds were changed. Check that this deployment points at the correct Firebase project, and contact the operator if this persists.";
+export const ACCOUNT_DOCUMENT_PROBLEM =
+  "A document exists at your Nexus account path, but it is not a Nexus simulation account, so it cannot be shown or traded. No funds were changed. Check that this deployment points at the correct Firebase project, and contact the operator if this persists.";
 
 const INITIALIZE_ATTEMPTS = 5;
 const INITIALIZE_BASE_DELAY_MS = 2000;
@@ -210,7 +220,7 @@ export function useTrading(user: User | null) {
     let bootstrapError = false;
 
     const db = getDbInstance();
-    const root = `users/${user.uid}`;
+    const root = accountPath(user.uid);
     const fail = (e: Error) => {
       setError(`Firestore: ${e.message}`);
       setConnectionFailed(true);
@@ -323,7 +333,7 @@ export function useTrading(user: User | null) {
         fail,
       ),
       onSnapshot(
-        doc(db, "system/market"),
+        doc(db, MARKET_DOCUMENT),
         (s) => setFeed(s.exists() ? readFeed(s.data()) : null),
         fail,
       ),
@@ -340,7 +350,7 @@ export function useTrading(user: User | null) {
     if (!user) return;
     return onSnapshot(
       query(
-        collection(getDbInstance(), `users/${user.uid}/trades`),
+        collection(getDbInstance(), `${accountPath(user.uid)}/trades`),
         orderBy("startedAt", "desc"),
         orderBy("__name__", "desc"),
         limit(tradeLimit),

@@ -1,24 +1,39 @@
 rules_version = '2';
+// NEXUS keeps every document it owns under the single root document
+// `apps/nexus` (see src/lib/trading/paths.ts). It never reads or writes
+// `users/{uid}` or any other top-level collection, so it can share a Firebase
+// project with another application without the two colliding on the same
+// documents or on the same rules.
+//
+// If this project also serves another application, MERGE the `apps/nexus`
+// block below into that application's rules instead of deploying this file as
+// a whole: the final catch-all denies everything this file does not name, and
+// would lock the other application out of its own data.
 service cloud.firestore {
   match /databases/{database}/documents {
     function authenticated() { return request.auth != null; }
     function admin() { return authenticated() && request.auth.token.admin == true; }
     function owner(uid) { return authenticated() && request.auth.uid == uid; }
-    match /users/{uid} {
-      allow read: if owner(uid) || admin();
-      // All mutations use verified server commands, including profiles and settings.
-      // Clients (including admins) cannot forge balances, sessions, or trade results.
-      allow write: if false;
-      match /{collection}/{id} {
-        allow read: if (owner(uid) || admin()) && collection in ['tradingSessions', 'trades', 'settings', 'portfolio', 'activity', 'ledger', 'withdrawals'];
+    match /apps/nexus {
+      // The namespace document itself holds nothing and is never written.
+      allow read, write: if false;
+      match /accounts/{uid} {
+        allow read: if owner(uid) || admin();
+        // All mutations use verified server commands, including profiles and settings.
+        // Clients (including admins) cannot forge balances, sessions, or trade results.
+        allow write: if false;
+        match /{collection}/{id} {
+          allow read: if (owner(uid) || admin()) && collection in ['tradingSessions', 'trades', 'settings', 'portfolio', 'activity', 'ledger', 'withdrawals'];
+          allow write: if false;
+        }
+      }
+      match /system/{id} {
+        allow read: if authenticated() && id in ['market', 'worker'];
         allow write: if false;
       }
+      match /systemEvents/{id} { allow read: if admin(); allow write: if false; }
+      // workQueue/{uid} is server-only: no client rule exists for it.
     }
-    match /system/{id} {
-      allow read: if authenticated() && id in ['market', 'worker'];
-      allow write: if false;
-    }
-    match /systemEvents/{id} { allow read: if admin(); allow write: if false; }
     match /{document=**} { allow read, write: if false; }
   }
 }

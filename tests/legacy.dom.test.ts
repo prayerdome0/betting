@@ -34,10 +34,11 @@ import {
   setDocument,
   textContent,
 } from "./support/dom-flow";
+import { accountPath } from "../src/lib/trading/paths";
 
 const EMAIL = "legacy@example.test";
 const UID = `uid-${EMAIL.replace(/\W/g, "")}`;
-const USER = `users/${UID}`;
+const USER = accountPath(UID);
 
 const SETTINGS = {
   strategy: "MOMENTUM" as const,

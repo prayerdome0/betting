@@ -1,60 +1,23 @@
-import { NextResponse } from "next/server";
-import { ApiError, verifyRequest, db } from "@/lib/server/firebase";
-import { commandSchema } from "@/lib/server/validation";
-import { executeCommand } from "@/lib/server/commands";
+import { startupFailureResponse } from "@/lib/server/startup";
 export const runtime = "nodejs";
 // The first authenticated request after a sign-up pays the Admin SDK cold start
 // (gRPC channel + token exchange) inside a Firestore transaction. The default
 // serverless budget is not enough for that on a fresh instance.
 export const maxDuration = 30;
+/**
+ * The implementation (and with it the Firebase Admin SDK) is loaded on the
+ * first request rather than with this module: an exception that escapes a
+ * route handler — a dependency the deployment cannot load included — becomes
+ * a bodiless HTTP 500 in Next.js, which the browser can only report as
+ * "Request failed (HTTP 500)". Loading lazily lets that failure be answered
+ * with its reason instead.
+ */
 export async function POST(request: Request) {
+  let service: typeof import("@/lib/server/command-service");
   try {
-    const identity = await verifyRequest(request);
-    const key = request.headers.get("idempotency-key");
-    if (!key || !/^[a-zA-Z0-9-]{8,80}$/.test(key))
-      throw new ApiError(400, "A valid idempotency key is required.");
-    if (Number(request.headers.get("content-length") || 0) > 8192)
-      throw new ApiError(413, "Request too large.");
-    const raw = await request.text();
-    if (raw.length > 8192) throw new ApiError(413, "Request too large.");
-    const parsed = commandSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success)
-      throw new ApiError(
-        400,
-        parsed.error.issues
-          .map((i) => `${i.path.join(".")}: ${i.message}`)
-          .join("; "),
-      );
-    const result = await executeCommand(identity, parsed.data, key);
-    return NextResponse.json(result);
+    service = await import("@/lib/server/command-service");
   } catch (error) {
-    if (error instanceof ApiError)
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status },
-      );
-    if (error instanceof SyntaxError)
-      return NextResponse.json(
-        { error: "Invalid JSON request." },
-        { status: 400 },
-      );
-    console.error("Command failed", error);
-    try {
-      await db().collection("systemEvents").add({
-        timestamp: Date.now(),
-        kind: "ERROR",
-        message:
-          "Command service failed. See protected server logs for details.",
-      });
-    } catch {
-      /* Backend unavailable. */
-    }
-    return NextResponse.json(
-      {
-        error:
-          "Firebase server unavailable. Check server credentials, project configuration, and Firestore deployment.",
-      },
-      { status: 503 },
-    );
+    return startupFailureResponse("/api/command", error);
   }
+  return service.handleCommand(request);
 }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { db } from "./firebase";
 import type { Feed, Quote } from "../trading/types";
+import { MARKET_DOCUMENT } from "../trading/paths";
 export const TICK_MS = 5000;
 const SEEDS: Omit<Quote, "history" | "changePct">[] = [
   { symbol: "EUR/USD", name: "Euro / US Dollar", price: 1.08425, precision: 5 },
@@ -58,7 +59,7 @@ export class SyntheticMarketProvider implements MarketDataProvider {
   }
 }
 export async function updateFeed(now: number) {
-  const ref = db().doc("system/market");
+  const ref = db().doc(MARKET_DOCUMENT);
   return db().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const prev = snap.exists ? (snap.data() as Feed) : null;

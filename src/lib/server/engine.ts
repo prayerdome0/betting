@@ -23,6 +23,7 @@ import {
   STRATEGY_VERSION,
 } from "../trading/strategy";
 import type { Account, Session, Feed, Trade } from "../trading/types";
+import { accountPath, workQueuePath } from "../trading/paths";
 // The only execution adapter implemented is paper trading. There is no broker/order endpoint.
 export interface ExecutionAdapter {
   readonly environment: "SIMULATION";
@@ -41,7 +42,7 @@ export async function processSession(
   clock: Clock = Date.now,
   store: Firestore = db(),
 ) {
-  const user = store.doc(`users/${userId}`);
+  const user = store.doc(accountPath(userId));
   const sessionRef = user.collection("tradingSessions").doc(sessionId);
   await store.runTransaction(async (tx) => {
     const [a, s, p] = await Promise.all([
@@ -50,7 +51,7 @@ export async function processSession(
       tx.get(user.collection("trades").where("status", "==", "OPEN")),
     ]);
     if (!a.exists) {
-      tx.delete(store.doc(`workQueue/${userId}`));
+      tx.delete(store.doc(workQueuePath(userId)));
       return;
     }
     if (!s.exists)
@@ -228,7 +229,7 @@ export async function processSession(
       session.completedAt = now;
       session.endingBalanceCents = account.balanceCents;
       account.activeSessionId = null;
-      tx.delete(store.doc(`workQueue/${userId}`));
+      tx.delete(store.doc(workQueuePath(userId)));
       event(
         tx,
         user,

@@ -19,6 +19,11 @@ import {
 } from "../src/lib/trading/types";
 import type { Command } from "../src/lib/server/validation";
 import { calculatePnl } from "../src/lib/trading/strategy";
+import {
+  accountPath,
+  SYSTEM_EVENTS_COLLECTION,
+  WORKER_DOCUMENT,
+} from "../src/lib/trading/paths";
 const EPOCH = 1800000000000;
 function feed(
   now: number,
@@ -44,7 +49,7 @@ async function fixture(markets: SymbolName[] = ["EUR/USD"]) {
   const store = new TransactionStore();
   let now = EPOCH;
   const uid = `user-${randomUUID()}`;
-  const user = `users/${uid}`;
+  const user = accountPath(uid);
   const call = (command: Command, key = randomUUID()) =>
     executeCommand(
       { uid, email: "test@example.test" },
@@ -66,7 +71,7 @@ async function fixture(markets: SymbolName[] = ["EUR/USD"]) {
     );
   const advance = (ms = 5000) => {
     now += ms;
-    store.seed("system/worker", { heartbeatAt: now });
+    store.seed(WORKER_DOCUMENT, { heartbeatAt: now });
     return now;
   };
   await call({ action: "initialize" });
@@ -133,9 +138,9 @@ test("server transactions: concurrent initialization credits each isolated accou
     );
   await Promise.all(Array.from({ length: 12 }, () => init("alice")));
   await init("bob");
-  assert.equal(store.read<Account>("users/alice").balanceCents, 1000);
-  assert.equal(store.list("users/alice/ledger").length, 1);
-  assert.equal(store.read<Account>("users/bob").balanceCents, 1000);
+  assert.equal(store.read<Account>(accountPath("alice")).balanceCents, 1000);
+  assert.equal(store.list(`${accountPath("alice")}/ledger`).length, 1);
+  assert.equal(store.read<Account>(accountPath("bob")).balanceCents, 1000);
   await executeCommand(
     { uid: "alice" },
     { action: "balance", balanceCents: 52341 },
@@ -144,8 +149,51 @@ test("server transactions: concurrent initialization credits each isolated accou
     store.firestore,
   );
   await init("alice");
-  assert.equal(store.read<Account>("users/alice").balanceCents, 52341);
-  assert.equal(store.read<Account>("users/bob").balanceCents, 1000);
+  assert.equal(store.read<Account>(accountPath("alice")).balanceCents, 52341);
+  assert.equal(store.read<Account>(accountPath("bob")).balanceCents, 1000);
+});
+test("another application's users/{uid} profile in the same project neither blocks account creation nor gets touched", async () => {
+  // Reported: sign-in found a `users/{uid}` document that belonged to the
+  // other application living in this Firebase project, so the account could
+  // never be initialized. Nexus documents live under their own namespace and
+  // the code must never read or write `users/{uid}` at all.
+  const store = new TransactionStore();
+  const foreign = { plan: "premium", wellnessScore: 42, status: "ACTIVE" };
+  store.seed("users/carol", foreign);
+  store.seed("users/carol/settings/trading", { theme: "dark" });
+  const call = (command: Command) =>
+    executeCommand(
+      { uid: "carol", email: "carol@example.test" },
+      command,
+      randomUUID(),
+      EPOCH,
+      store.firestore,
+    );
+  const result = await call({ action: "initialize" });
+  assert.match(result.message, /ready/i);
+  const account = store.read<Account>(accountPath("carol"));
+  assert.equal(account.accountType, "SIMULATION");
+  assert.equal(account.balanceCents, 1000);
+  assert.ok(accountPath("carol").startsWith("apps/nexus/"));
+  await call({ action: "balance", balanceCents: 25000 });
+  assert.equal(store.read<Account>(accountPath("carol")).balanceCents, 25000);
+  assert.deepEqual(
+    store.read("users/carol"),
+    foreign,
+    "the other application's document is untouched",
+  );
+  assert.deepEqual(store.read("users/carol/settings/trading"), {
+    theme: "dark",
+  });
+  assert.ok(
+    store
+      .dump()
+      .every(
+        ([path]) =>
+          path.startsWith("apps/nexus/") || path.startsWith("users/carol"),
+      ),
+    "every Nexus write stays inside the apps/nexus namespace",
+  );
 });
 test("idempotency keys are bound to canonical payloads and never replay a different command", async () => {
   const f = await fixture();
@@ -432,7 +480,7 @@ test("admin review is authorized, audited, and cannot complete a withdrawal twic
   ]);
   assert.equal(f.account().balanceCents, 45000);
   assert.equal(f.account().withdrawalHoldCents, 0);
-  assert.equal(f.store.list("systemEvents").length, 2);
+  assert.equal(f.store.list(SYSTEM_EVENTS_COLLECTION).length, 2);
   await assert.rejects(
     f.call({ action: "cancelWithdrawal", id: w.id }),
     /no longer/,
@@ -541,7 +589,7 @@ test("zero, stale, future, and malformed worker heartbeats cannot authorize a se
     f.now() - 30000,
     f.now() + 10000,
   ]) {
-    f.store.seed("system/worker", { heartbeatAt });
+    f.store.seed(WORKER_DOCUMENT, { heartbeatAt });
     await assert.rejects(
       f.call({ action: "start", durationSeconds: 300 }),
       /offline/,
@@ -577,7 +625,7 @@ test("a user cannot cancel another account’s withdrawal by guessing its ID", a
     /not found/,
   );
   assert.equal(f.account().withdrawalHoldCents, 5000);
-  assert.equal(f.store.read<Account>("users/bob").balanceCents, 1000);
+  assert.equal(f.store.read<Account>(accountPath("bob")).balanceCents, 1000);
 });
 
 test("a recovered session clears its visible execution error and records recovery without duplicating entries", async () => {
@@ -609,7 +657,7 @@ test("resume rejects malformed worker health instead of treating NaN as fresh", 
   const f = await fixture();
   await f.call({ action: "start", durationSeconds: 300 });
   await f.call({ action: "pause" });
-  f.store.seed("system/worker", { heartbeatAt: NaN });
+  f.store.seed(WORKER_DOCUMENT, { heartbeatAt: NaN });
   await assert.rejects(f.call({ action: "resume" }), /offline/);
   assert.equal(f.session().status, "PAUSED");
 });
@@ -633,7 +681,7 @@ test("a stored account without settings is repaired from the legacy projection a
   const f = await fixture();
   const original = f.account();
   // What an earlier release left behind: everything but the settings object,
-  // which was projected to users/{uid}/settings/trading instead.
+  // which was projected to {account}/settings/trading instead.
   const stored: Record<string, unknown> = { ...original };
   delete stored.settings;
   f.store.seed(f.user, stored);

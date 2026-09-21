@@ -8,6 +8,8 @@ export type IdentitySource =
 /** Non-secret reason the server identity is or is not usable. */
 export type IdentityHint =
   | "READY"
+  /** The server code did not start, so its identity could not be inspected. */
+  | "UNKNOWN"
   | "NOT_CONFIGURED"
   | "INVALID_SERVICE_ACCOUNT_JSON"
   | "INCOMPLETE_SERVICE_ACCOUNT"
@@ -24,7 +26,8 @@ export const IDENTITY_SOURCE_LABEL: Record<IdentitySource, string> = {
 
 export type ServiceHealth = {
   configured: boolean;
-  identitySource: IdentitySource;
+  /** `null` only when the server code failed to start (`SERVER_STARTUP_FAILED`). */
+  identitySource: IdentitySource | null;
   identityHint: IdentityHint;
   workerOnline: boolean;
   feedFresh: boolean;
@@ -35,6 +38,8 @@ export type ServiceHealth = {
   status:
     | "READY"
     | "DEGRADED"
+    /** A server module could not be loaded; see `message` for the reason. */
+    | "SERVER_STARTUP_FAILED"
     | "SERVER_IDENTITY_REQUIRED"
     | "DATABASE_UNAVAILABLE"
     | "WORKER_OFFLINE"
