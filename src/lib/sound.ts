@@ -216,6 +216,31 @@ export const sfx = {
     tone({ f: 990, dur: 0.09, t: 0.05, type: "triangle", vol: 0.13 });
   },
 
+  /** Trade opened sound (crisp double tone). */
+  tradeOpen() {
+    tone({ f: 587.33, dur: 0.08, type: "sine", vol: 0.15 });
+    tone({ f: 880, dur: 0.12, t: 0.06, type: "triangle", vol: 0.15 });
+  },
+
+  /** Trade closed in profit (cheerful chime). */
+  tradeWin() {
+    tone({ f: 659.25, dur: 0.1, type: "triangle", vol: 0.18 });
+    tone({ f: 880, dur: 0.12, t: 0.07, type: "sine", vol: 0.18 });
+    tone({ f: 1318.5, dur: 0.22, t: 0.15, type: "sine", vol: 0.2 });
+  },
+
+  /** Trade closed in loss (soft low descending tone). */
+  tradeLoss() {
+    tone({ f: 392, slide: 260, dur: 0.22, type: "sawtooth", vol: 0.14 });
+    tone({ f: 220, dur: 0.28, t: 0.08, type: "sine", vol: 0.12 });
+  },
+
+  /** Alert notification. */
+  alert() {
+    tone({ f: 784, dur: 0.07, type: "sine", vol: 0.16 });
+    tone({ f: 1046.5, dur: 0.12, t: 0.08, type: "sine", vol: 0.18 });
+  },
+
   /** Cashout / coins dropping. */
   cashout() {
     tone({ f: 1568, dur: 0.09, type: "sine", vol: 0.22 });
