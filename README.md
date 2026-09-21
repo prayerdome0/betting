@@ -55,9 +55,15 @@ The provided public client configuration for **`ai-health-d2c5b`** is wired in a
 | Variable | Value |
 | --- | --- |
 | `NEXT_PUBLIC_FIREBASE_API_KEY` / `_AUTH_DOMAIN` / `_PROJECT_ID` | your Firebase web app config (public) |
-| `NEXT_PUBLIC_FIREBASE_APP_ID` / `_MESSAGING_SENDER_ID` / `_STORAGE_BUCKET` | optional, set them together with the project id |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` / `_MESSAGING_SENDER_ID` / `_STORAGE_BUCKET` | use all values from `.env.example` together with the project id |
 | `FIREBASE_PROJECT_ID` | same project as the browser config |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | the full service account key file (server-only) |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | the full replacement service account key file (server-only; mark sensitive in Vercel) |
+
+`.env.example` contains the complete public configuration for `ai-health-d2c5b`. Copying it to `.env.local` configures local runs only; it does **not** set Vercel environment variables. Enter the values in Vercel for each intended deployment environment. Never reuse a service-account key shared in chat: revoke it in Google Cloud IAM and enter a replacement directly in Vercel, not in source control. Configure the worker's credential separately on its host.
+
+The supplied public Web Push key is recorded as `NEXT_PUBLIC_FIREBASE_VAPID_KEY` in `.env.example` for future use. It is not an Admin credential, and push notifications are **not enabled**: messaging service-worker support, token registration, and a notification sender are not yet implemented.
+
+After redeploying, open `/api/health`. Both `checks.identity` and `checks.database` must be `true` to confirm backend access. `WORKER_OFFLINE` means Firebase is reachable but the separate worker is not running; full readiness requires all four checks to pass. For a local read-only check, use `npm run doctor -- --json`.
 
 Redeploy after changing them (`NEXT_PUBLIC_*` values are inlined at build time). Then in Firebase console → Authentication → Settings → **Authorized domains**, add your production domain and every preview domain you intend to use; otherwise sign-in is rejected with `auth/unauthorized-domain`.
 
