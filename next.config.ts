@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 const emulators = process.env.NEXT_PUBLIC_FIREBASE_EMULATORS === "true";
 const nextConfig: NextConfig = {
   devIndicators: false,
-  allowedDevOrigins: ["*.e2b.app", "127.0.0.1", "localhost"],
+  allowedDevOrigins: ["*.e2b.app", "**.e2b.app", "127.0.0.1", "localhost"],
   async rewrites() {
     // Same-origin browser SDK traffic, only enabled explicitly for the local demo project.
     return emulators
