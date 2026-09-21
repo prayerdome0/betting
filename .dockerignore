@@ -1,0 +1,14 @@
+.git
+node_modules
+.next
+.env*
+!.env.example
+.firebase*
+.tools
+*.log
+*.zip
+*.pem
+*service-account*.json
+*credentials*.json
+test-results
+playwright-report

@@ -32,3 +32,10 @@ drizzle/
 
 # webhook event store (local dev)
 /data/
+
+.firebase-data/
+.firebase/
+*debug.log
+playwright-report/
+test-results/
+.tools/

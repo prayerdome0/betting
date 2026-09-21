@@ -1,0 +1,108 @@
+"use client";
+import { Check, Clock3, Server, ShieldCheck, WifiOff } from "lucide-react";
+import type { ServiceHealth } from "@/lib/trading/status";
+import { Badge, date, PanelHead } from "./ui";
+export default function SystemStatus({
+  health,
+  connection,
+  browserOnline,
+}: {
+  health: ServiceHealth | null;
+  connection: string;
+  browserOnline: boolean;
+}) {
+  const checks = [
+    [
+      "Server identity",
+      health?.checks.identity,
+      "Hosting-side Firebase credentials",
+    ],
+    ["Firestore access", health?.checks.database, "Persistent source of truth"],
+    [
+      "Independent worker",
+      health?.checks.worker,
+      "Runs even with the browser closed",
+    ],
+    [
+      "Synthetic market feed",
+      health?.checks.feed,
+      "Fresh, validated observations",
+    ],
+  ] as const;
+  return (
+    <section className="panel system-status">
+      <PanelHead
+        title="System connection"
+        subtitle="Actual service readiness — not a simulated status indicator"
+      />
+      <div className="system-status-body">
+        <div className="system-status-summary">
+          <Server size={21} />
+          <div>
+            <strong>
+              {health?.status.replaceAll("_", " ") || "CHECKING CONNECTION"}
+            </strong>
+            <p>
+              {health?.message ||
+                "Checking server readiness. Trading cannot start until the worker and market feed are available."}
+            </p>
+          </div>
+          <Badge tone={health?.status === "READY" ? "green" : "neutral"}>
+            {health?.environment === "FIREBASE_EMULATOR"
+              ? "LOCAL EMULATORS"
+              : "FIREBASE"}
+          </Badge>
+        </div>
+        <div className="system-checks">
+          {checks.map(([label, ok, note]) => (
+            <div key={label}>
+              <span className={ok ? "check-ok" : "check-pending"}>
+                {ok ? <Check size={15} /> : <Clock3 size={15} />}
+              </span>
+              <div>
+                <strong>{label}</strong>
+                <small>{note}</small>
+              </div>
+              <b>{health ? (ok ? "Connected" : "Not ready") : "Checking"}</b>
+            </div>
+          ))}
+        </div>
+        <div className="system-status-foot">
+          {browserOnline ? <ShieldCheck size={14} /> : <WifiOff size={14} />}
+          <span>{connection}</span>
+          <span>Worker heartbeat: {date(health?.heartbeatAt)}</span>
+        </div>
+        {health && health.status !== "READY" && (
+          <details className="setup-instructions">
+            <summary>Deployment checklist</summary>
+            <ol>
+              <li>
+                Enable Email/Password authentication and create Firestore in
+                Firebase Console.
+              </li>
+              <li>
+                Configure server Application Default Credentials through your
+                hosting provider. Never enter Admin keys in this website.
+              </li>
+              <li>
+                Deploy <code>firestore.rules</code> and{" "}
+                <code>firestore.indexes.json</code> using an authorized Firebase
+                CLI.
+              </li>
+              <li>
+                Run <code>npm run worker</code> as a separate, supervised
+                service. Deploying the web app alone does not run it.
+              </li>
+            </ol>
+            <p>
+              Full production and isolated-emulator instructions are in the
+              project’s README.md. This check does not verify deployed Security
+              Rules or Auth provider configuration; those require the Firebase
+              integration tests.
+            </p>
+          </details>
+        )}
+      </div>
+    </section>
+  );
+}
