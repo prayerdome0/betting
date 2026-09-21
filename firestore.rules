@@ -1,20 +1,24 @@
 rules_version = '2';
-
-// Xacheus Betting — Firestore security rules.
-// Deploy with:  firebase deploy --only firestore:rules
-// (requires the Firebase CLI + a linked project:  firebase use xacheus-339ba)
-
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // Every user owns their wallet + payment references, and only they
-    // can read/write them. Auth is required for any access.
+    function authenticated() { return request.auth != null; }
+    function admin() { return authenticated() && request.auth.token.admin == true; }
+    function owner(uid) { return authenticated() && request.auth.uid == uid; }
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if owner(uid) || admin();
+      // All mutations use verified server commands, including profiles and settings.
+      // Clients (including admins) cannot forge balances, sessions, or trade results.
+      allow write: if false;
+      match /{collection}/{id} {
+        allow read: if (owner(uid) || admin()) && collection in ['tradingSessions', 'trades', 'settings', 'portfolio', 'activity', 'ledger', 'withdrawals'];
+        allow write: if false;
+      }
     }
-
-    match /users/{uid}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+    match /system/{id} {
+      allow read: if authenticated() && id in ['market', 'worker'];
+      allow write: if false;
     }
+    match /systemEvents/{id} { allow read: if admin(); allow write: if false; }
+    match /{document=**} { allow read, write: if false; }
   }
 }

@@ -1,54 +1,46 @@
-/**
- * Firebase Auth actions + friendly error mapping.
- * Callable only from the client (event handlers).
- */
-
 import {
   createUserWithEmailAndPassword,
-  GoogleAuthProvider,
   signInWithEmailAndPassword,
-  signInWithPopup,
   signOut,
+  sendPasswordResetEmail,
 } from "firebase/auth";
-import { getAuthInstance } from "./firebase";
-
+import { getAuthInstance, persistAuth } from "./firebase";
 export async function signInWithEmail(email: string, password: string) {
+  await persistAuth();
   return signInWithEmailAndPassword(getAuthInstance(), email, password);
 }
-
 export async function signUpWithEmail(email: string, password: string) {
+  await persistAuth();
   return createUserWithEmailAndPassword(getAuthInstance(), email, password);
 }
-
-export async function signInWithGoogle() {
-  return signInWithPopup(getAuthInstance(), new GoogleAuthProvider());
+export async function resetPassword(email: string) {
+  return sendPasswordResetEmail(getAuthInstance(), email);
 }
-
 export async function signOutUser() {
   return signOut(getAuthInstance());
 }
-
-export function friendlyAuthError(error: unknown): string {
-  const code = (error as { code?: string })?.code ?? "";
-  switch (code) {
-    case "auth/email-already-in-use":
-      return "That email already has an account — sign in instead.";
-    case "auth/invalid-email":
-      return "That email address doesn't look right.";
-    case "auth/wrong-password":
-    case "auth/invalid-credential":
-      return "Wrong email or password.";
-    case "auth/user-not-found":
-      return "No account found for that email.";
-    case "auth/weak-password":
-      return "Password must be at least 6 characters.";
-    case "auth/network-request-failed":
-      return "Can't reach Firebase from this environment — deploy to Vercel (or check your connection) and try again.";
-    case "auth/popup-blocked":
-      return "The Google sign-in popup was blocked by the browser.";
-    case "auth/unauthorized-domain":
-      return "This domain isn't authorized for Firebase Auth. Add it in the Firebase console: Authentication → Settings → Authorized domains.";
-    default:
-      return error instanceof Error ? error.message : "Something went wrong. Please try again.";
-  }
+export function friendlyAuthError(error: unknown) {
+  const code = (error as { code?: string })?.code;
+  const messages: Record<string, string> = {
+    "auth/email-already-in-use":
+      "This email already has an account. Sign in instead.",
+    "auth/invalid-email": "Please enter a valid email address.",
+    "auth/invalid-credential": "The email or password is incorrect.",
+    "auth/weak-password": "Use a password with at least 8 characters.",
+    "auth/too-many-requests": "Too many attempts. Please wait and try again.",
+    "auth/operation-not-allowed":
+      "Enable Email/Password sign-in in the Firebase console.",
+    "auth/unauthorized-domain":
+      "This domain must be added to the Firebase Auth authorized domains.",
+    "auth/configuration-not-found":
+      "Firebase Authentication needs to be enabled for this project.",
+    "auth/network-request-failed":
+      "Unable to connect to Firebase. Check your connection and configuration.",
+  };
+  return (
+    (code && messages[code]) ||
+    (error instanceof Error
+      ? error.message
+      : "Something went wrong. Please try again.")
+  );
 }

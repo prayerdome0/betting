@@ -1,34 +1,49 @@
 {
-  "name": "xacheus-betting",
+  "name": "nexus-trading-simulation",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "worker": "node --env-file-if-exists=.env.local --import tsx scripts/worker.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "test:integration": "tsx --test tests/*.integration.ts",
+    "emulators": "firebase emulators:start --project demo-nexus --only auth,firestore --import=.firebase-data --export-on-exit=.firebase-data",
+    "test:e2e": "playwright test",
+    "format": "prettier --write src scripts tests *.ts *.mjs *.json",
+    "admin:grant": "node --env-file-if-exists=.env.local --import tsx scripts/set-admin.ts",
+    "doctor": "node --env-file-if-exists=.env.local --import tsx scripts/doctor.ts"
   },
   "dependencies": {
-    "dotenv": "17.3.1",
-    "drizzle-orm": "0.45.2",
     "firebase": "^12.17.1",
+    "firebase-admin": "^14.4.0",
     "lucide-react": "^1.47.0",
-    "next": "16.2.6",
-    "pg": "8.20.0",
+    "next": "^16.3.5",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
-    "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "postcss": "8.5.8",
+    "eslint-config-next": "^16.3.5",
+    "firebase-tools": "^15.30.2",
+    "postcss": "^8.5.28",
+    "prettier": "^3.9.8",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "gaxios": {
+      "uuid": "^11.1.1"
+    }
   }
 }

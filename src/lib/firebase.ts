@@ -1,46 +1,61 @@
-/**
- * Firebase client setup (Auth + Firestore).
- *
- * The values below are the public project identifiers for the Xacheus
- * Firebase project — safe to ship in the client bundle by design
- * (Firebase security comes from Authentication + Firestore rules, not
- * from hiding the config). Override any value via NEXT_PUBLIC_FIREBASE_*
- * env vars (e.g. to point at your own project on Vercel).
- *
- * Initialization is lazy so importing this module never touches Firebase
- * during server-side rendering — all calls happen in client effects or
- * event handlers.
- */
-
-import { getApps, getApp, initializeApp, type FirebaseApp } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
-import { getFirestore, type Firestore } from "firebase/firestore";
-
+import { getApps, getApp, initializeApp } from "firebase/app";
+import {
+  getAuth,
+  connectAuthEmulator,
+  setPersistence,
+  browserLocalPersistence,
+  type Auth,
+} from "firebase/auth";
+import {
+  getFirestore,
+  initializeFirestore,
+  type Firestore,
+} from "firebase/firestore";
+export const isEmulator = process.env.NEXT_PUBLIC_FIREBASE_EMULATORS === "true";
 export const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyARQx_UMUz0Q2w3aggfE46WBxzli1ChziQ",
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "xacheus-339ba.firebaseapp.com",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "xacheus-339ba",
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "xacheus-339ba.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "246733468580",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "1:246733468580:web:fa0a7693a35709b2f40731",
+  apiKey:
+    process.env.NEXT_PUBLIC_FIREBASE_API_KEY ||
+    "AIzaSyCl3C2YsBc5r7WS8HRyAtxc5r4LoC4OFfs",
+  authDomain:
+    process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ||
+    "ai-health-d2c5b.firebaseapp.com",
+  projectId: isEmulator
+    ? "demo-nexus"
+    : process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "ai-health-d2c5b",
+  storageBucket: "ai-health-d2c5b.firebasestorage.app",
+  messagingSenderId: "1018985914953",
+  appId: "1:1018985914953:web:3317363b3be4ad57299598",
 };
-
-let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
-let db: Firestore | null = null;
-
-export function getFirebaseApp(): FirebaseApp {
-  if (typeof window === "undefined") throw new Error("Firebase is client-only");
-  if (!app) app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return app;
+let firestore: Firestore | null = null;
+export function getFirebaseApp() {
+  if (typeof window === "undefined")
+    throw new Error("Firebase client is browser-only");
+  return getApps().length ? getApp() : initializeApp(firebaseConfig);
 }
-
-export function getAuthInstance(): Auth {
-  if (!auth) auth = getAuth(getFirebaseApp());
+export function getAuthInstance() {
+  if (!auth) {
+    auth = getAuth(getFirebaseApp());
+    if (isEmulator)
+      connectAuthEmulator(auth, window.location.origin, {
+        disableWarnings: true,
+      });
+  }
   return auth;
 }
-
-export function getDbInstance(): Firestore {
-  if (!db) db = getFirestore(getFirebaseApp());
-  return db;
+export async function persistAuth() {
+  await setPersistence(getAuthInstance(), browserLocalPersistence);
+}
+export function getDbInstance() {
+  if (!firestore) {
+    const app = getFirebaseApp();
+    firestore = isEmulator
+      ? initializeFirestore(app, {
+          host: window.location.host,
+          ssl: window.location.protocol === "https:",
+          experimentalForceLongPolling: true,
+        })
+      : getFirestore(app);
+  }
+  return firestore;
 }

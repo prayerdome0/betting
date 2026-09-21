@@ -1,102 +1,211 @@
-# 🎰 Xacheus Betting
+# NEXUS AI — persistent trading simulation
 
-A full betting-platform front-end: **real sportsbook odds** (via [The Odds API](https://the-odds-api.com)), **8 instant casino games** with synthesized sound effects and heavy animations, a persistent **wallet & bet ledger**, Stripe-ready **deposits**, and a live settlement pipeline — all wrapped in the **Xacheus Betting** brand.
+A responsive Next.js trading workspace backed by **Firebase Authentication and Firestore**, with an **independent, server-authoritative paper-trading worker**. Light/dark themes, automated sessions, timestamp-based countdowns, strategy settings, trade inspection/CSV export, balance charts, a persistent activity timeline, simulated withdrawals, and a claims-protected admin inspector.
 
-> ⚠️ **Demo platform.** Real-money payouts require a licensed payment processor and compliance with local gambling law (in Zambia: Lotteries and Betting Control Board). The deposit flow is Stripe-ready but defaults to a sandbox mode. 18+ · play responsibly.
+**Simulation only. No real money, no broker orders, no live prices, no guaranteed profits.** The “AI” is a transparent rules-based momentum / mean-reversion engine, not an LLM or a claimed predictive model. The initial feed is explicitly synthetic. There is no code path that submits real orders or payments.
 
-## Quick start
+## Current deployment status
 
-```bash
-npm install
-npm run dev          # http://localhost:3000
+The provided public client configuration for **`ai-health-d2c5b`** is wired in. Public Firebase config is not a server credential. This checkout does **not** contain an Admin key, does not deploy rules automatically, and cannot turn on Firebase services on your behalf.
+
+**Until you complete the Firebase setup below and run the worker, accounts cannot initialize in Firestore and new trading sessions are blocked.** The UI surfaces connection/setup errors; it never falls back to fake balances, seeded trades, or browser-only account storage. A signed-out dashboard deliberately shows empty data rather than an invented $500 portfolio.
+
+## 1. Production Firebase setup
+
+1. In Firebase Console → `ai-health-d2c5b`, enable **Authentication → Email/Password**. Configure a suitable password policy and email enumeration protection. Add the deployed website domain (and development preview domain if needed) to Auth authorized domains. Configure password-reset templates and authorized action URLs.
+2. Create a **Cloud Firestore** database in the desired region. Confirm billing, budgets, and access policies.
+3. Install dependencies with Node **22+**: `npm ci`.
+4. Copy `.env.example` to `.env.local`. Its default public config already points to the supplied project.
+5. Configure **server Application Default Credentials**, independently for the web server and worker:
+   - Recommended: an attached Google Cloud service identity / Workload Identity Federation. Give only necessary Firestore data access and Firebase Auth lookup/token-verification permissions.
+   - Local alternative: `GOOGLE_APPLICATION_CREDENTIALS=/secure/external/path/credential.json`. Keep that file outside the checkout. Never paste credentials into chat, expose them through `NEXT_PUBLIC_*`, or ship them in a client or Android bundle.
+6. Deploy rules and indexes with an authorized Firebase CLI identity:
+   ```bash
+   npx firebase deploy --only firestore:rules,firestore:indexes --project ai-health-d2c5b
+   ```
+   Do not test this app against permissive legacy wallet rules. All client writes to financial and account documents are intentionally denied.
+7. Start **both** services:
+   ```bash
+   # Web (terminal/service 1)
+   npm run dev -- --hostname 0.0.0.0
+
+   # Independent worker (terminal/service 2; loads .env.local)
+   npm run worker
+   ```
+   Production web: `npm run build && npm run start -- --hostname 0.0.0.0`.
+8. Create a user through the UI. The server initializes the $10 welcome account once in a Firestore transaction. Configure $500 (or another virtual balance) explicitly in Settings.
+9. For authorized admin inspection, run this **trusted operator-only** command:
+   ```bash
+   npm run admin:grant -- FIREBASE_AUTH_UID
+   # Revoke:
+   npm run admin:grant -- FIREBASE_AUTH_UID revoke
+   ```
+   Sign out/in to refresh the custom claim. Admin authorization is `request.auth.token.admin === true`; it is never inferred from a client profile field or an email address.
+
+### Hosting the worker is mandatory
+
+A website deployment alone is insufficient. `scripts/worker.ts` must run continuously on an always-on VM, a supervised container, or a worker service. Run under a process supervisor with automatic restart. Do **not** put the loop in a short-lived Vercel function, a browser tab, or a request handler. The provided Dockerfile builds a web image; run a second instance of the image with `npm run worker`. On managed platforms, use a workload intended for always-on workers, not a request-only container that pauses CPU between requests.
+
+The worker persists a heartbeat, polls a Firestore work queue, advances a shared synthetic feed, and processes sessions every five seconds. Start/resume require a recent worker heartbeat. Stale quotes never execute. Multiple workers are protected by per-session quote deduplication and optimistic Firestore transactions; this is a modest-scale prototype, not a low-latency exchange.
+
+If **the browser closes**, the worker continues. If **the worker/server itself is down**, no trades or historical prices are invented: on restart, expiry is checked against the original deadline and positions are settled using the next available quote. An interruption is recorded. Stop requests persist immediately and block new entries; if the worker is down, settlement waits for it to return.
+
+## 2. Fully isolated local Firebase development
+
+Requires Java **21+** for the official Firestore emulator and network access for its initial download. Do not point emulator mode at the production project.
+
+Use these values together in `.env.local`:
+
+```dotenv
+NEXT_PUBLIC_FIREBASE_EMULATORS=true
+FIREBASE_PROJECT_ID=demo-nexus
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
+FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
 ```
 
-Open the site, hit the **⚙ Settings** button and paste your [The Odds API key](https://the-odds-api.com) (free tier = 500 requests/month). The Sportsbook immediately switches from clearly-labeled **demo odds** to **real bookmaker odds**. The key never ships in the browser bundle — all calls go through the server proxy at `/api/odds`.
+Run in separate terminals:
 
-### Environment variables (`.env` — see `.env.example`)
+```bash
+npm run emulators
+npm run dev -- --hostname 0.0.0.0
+npm run worker
+```
 
-| Variable | Purpose |
-| --- | --- |
-| `ODDS_API_KEY` | Server-side odds key (production). The in-app Settings panel is the dev/self-hosted alternative. |
-| `PAYMENT_GATEWAY_BASE_URL` | OnTech payment gateway base (`https://payments.ontech.co.zm/api/v1`). |
-| `PAYMENT_GATEWAY_API_KEY` | OnTech API key (`op_…`) for Mobile Money collection. |
-| `PAYMENT_GATEWAY_WEBHOOK_SECRET` | Secret used to verify payment webhooks (`/api/payments/webhook`). |
-| `PAYMENT_GATEWAY_SIGNING_SECRET` | Optional second signing secret, if the gateway signs with a different key. |
-| `STRIPE_SECRET_KEY` | Enables card deposits via Stripe Checkout (`sk_test_…` to try it). Without it, the Card tab is sandboxed with instant credit. |
-| `NEXT_PUBLIC_SITE_URL` | Base URL used for Stripe success/cancel redirects. |
-| `DATABASE_URL` | Optional Postgres connection — the Drizzle schema in `src/db` is ready for a server-side ledger. |
+The browser uses **same-origin rewrites** for Auth and Firestore emulator traffic; no browser-facing `localhost` service URLs are used. The UI labels emulator mode explicitly. Do not expose emulator-mode deployments to untrusted users: emulators have no production IAM security boundary. Production never enables these rewrites.
 
-> 🔑 **Never commit `.env.local`** — it is gitignored. It holds the real gateway/Stripe secrets.
+`npm run emulators` imports `.firebase-data` and exports on graceful exit, so local account data survives a normal emulator restart. Browser reload/close never resets data. A forced emulator crash may lose data since its last export; use production Firestore for durable hosted persistence. Emulator files are ignored by Git. Emulator password-reset links appear in the emulator logs; no email is sent.
 
-## What's inside
+## Architecture
 
-- **Sportsbook** — real events & odds (h2h, spreads, totals) from 50+ bookmakers via The Odds API; best-price aggregation; **multi-selection bet slip with parlays** (up to 10 legs, combined odds, reduced-on-push settlement); **live scores** (90s polling, LIVE badges, auto-settle the moment a game finishes); early **cash-out** at fair value (live-odds based, margin included); one-click **settle results** (handles wins, losses, pushes/refunds).
-- **Casino** — Coin Flip, Roulette, Dice Roll, Plinko, Lucky Slots, Mines, Sky Crash, Towers. Every round is a real ledger entry.
-- **Wallet & ledger** — balance with animated count-up, deposits, withdrawals (requests), bet history with status chips (OPEN / WON / LOST / CASHED).
-- **Sound engine** (`src/lib/sound.ts`) — 25+ synthesized Web Audio effects: coin flips, wheel clicks, reel stops, win fanfares, jackpot, explosions, cash-out chimes. No audio files needed. Mutable with the 🔊 toggle (persisted).
-- **FX** — confetti bursts, win banners, screen shake on losses, live wins ticker, shimmer buttons, jackpot rays, crash explosion rings, modal/toast animations. Respects `prefers-reduced-motion`.
-- **Graceful demo fallback** — missing/invalid key or unreachable odds service ⇒ the site automatically serves realistic demo odds (with a clear banner), so every feature stays testable.
+```text
+MarketDataProvider (SyntheticMarketProvider today; licensed adapter later)
+        ↓
+Rules-based strategy / auditable analysis (momentum or mean reversion)
+        ↓
+Risk checks (allocation, reserved funds, position cap, session loss limit)
+        ↓
+PaperExecution adapter (no leverage; collateral-limited loss)
+        ↓
+Firestore transaction: position/trade + account + ledger + session + events
+        ↓
+Firestore onSnapshot listeners → dashboard
+```
 
-## API routes
+- UI: `src/components/`, `src/lib/useTrading.ts` (reads and authenticated command requests only).
+- Market provider: `src/lib/server/market.ts`.
+- Pure strategies and financial math: `src/lib/trading/strategy.ts`.
+- Authoritative execution: `src/lib/server/engine.ts`, `scripts/worker.ts`.
+- Commands, validation, one-time initialization: `src/lib/server/commands.ts`, `validation.ts`.
+- Authenticated API: `src/app/api/command/route.ts`; admin API: `src/app/api/admin/route.ts`.
+- Security: `firestore.rules`; Admin SDK initialization is server-only, never imported into the client bundle.
 
-| Route | What it does |
-| --- | --- |
-| `GET /api/odds?action=sports\|odds\|scores&sportKey=…` | Proxies The Odds API v4. Key from `ODDS_API_KEY` env or `x-odds-api-key` header (set by the Settings panel). Falls back to demo data. |
-| `POST /api/deposit` | Initiates a **Mobile Money deposit** via OnTech: `{ amount, phone }` (Zambian number, e.g. `0976123456`). Returns a `reference` (+ `paymentId`) to poll, or `confirmed: true` for instant/sandbox credit. |
-| `GET /api/deposit/status?reference=…&paymentId=…` | Checks the webhook event store, then polls the gateway for payment status. `confirmed: true` → credit the wallet. |
-| `POST /api/payments/webhook` | OnTech payment confirmation webhook. Verifies the HMAC signature (secret from env), records the event, answers 200/401. |
-| `POST /api/checkout` | Stripe Checkout Session (REST, no SDK) when `STRIPE_SECRET_KEY` is set, otherwise sandbox. |
-| `GET /api/checkout/confirm?session_id=…` | Verifies a paid Stripe session and returns the amount to credit. |
+### Data model
 
-## Mobile Money deposit flow
+```text
+users/{uid}                           # Profile, currency, account type/status,
+                                      # authoritative cents, stats, settings, current session ID
+users/{uid}/settings/profile
+users/{uid}/settings/trading
+users/{uid}/portfolio/current         # Transactionally updated balance/available projection
+users/{uid}/tradingSessions/{id}       # Deadline, snapshot of strategy, start/end state, results
+users/{uid}/trades/{id}                # OPEN → CLOSED, prices, side, quantity, net P/L,
+                                      # fees, timestamps, decision/reason/version, session ID
+users/{uid}/ledger/{id}               # Every balance delta, resulting balance, reference
+users/{uid}/activity/{id}             # Timestamped scans, analyses, waits, signals, monitoring
+users/{uid}/withdrawals/{id}          # Simulated request workflow, held funds
+users/{uid}/commands/{key}            # Server-only idempotency receipts
+workQueue/{uid}                       # Server-only active-session work pointer
+system/market                        # Shared, explicitly synthetic market feed
+system/worker                        # Heartbeat and operational status
+systemEvents/{id}                    # Admin-only errors and workflow audit
+```
 
-1. Player enters amount + phone number in the **📱 Mobile Money** tab.
-2. `POST /api/deposit` calls OnTech `pay/collect` with your `X-API-Key` and records the reference.
-3. The player approves the push on their phone.
-4. OnTech sends the confirmation webhook → signature verified → event stored.
-5. The client polls `GET /api/deposit/status` (every 3s, keeps running if the modal closes) → credits the balance exactly once (double-credit guarded by reference).
-6. If the gateway is unconfigured or unreachable, deposits fall back to **sandbox credit** with a clear label (never silently in production — the sandbox only engages when the gateway genuinely can't be reached).
+Timestamps are server-generated **Unix milliseconds** (not client clocks). Transaction callbacks reevaluate the server clock on retry, so contention cannot preserve an obsolete deadline or authorize stale quotes. Money uses integer cents. Per-account monotonic sequences order ledger entries and activity even when several events share the same millisecond. Account creation is transactional: racing first logins cannot issue two welcome credits. Profile, portfolio, settings projections and balance ledger commit together. No account data is stored only in React or localStorage; localStorage contains only the visual theme. Firebase Auth uses its supported local persistence, not hand-written password storage.
 
-The OnTech response schema isn't publicly documented, so parsing (`src/lib/ontech.ts`) is defensive: it reads status/reference/id from the common field shapes, verifies webhooks against several standard HMAC header conventions, and treats a bare `X-API-Key` header match as a last-resort check. Confirm the exact webhook payload/header with the gateway provider and tighten `verifyWebhookSignature` if needed.
+### Financial semantics
 
-## Accounts: Firebase Auth + Firestore
+- Initial starting/welcome balance is **$10.00**, currency USD, account type SIMULATION.
+- Configure funds explicitly in Settings. This writes a `DEMO_ADJUSTMENT` delta, never deletes history, and is blocked while a session or withdrawal hold exists. No auto-$500 reset.
+- Position allocation is reserved, not debited. Available balance = balance − open allocations − withdrawal holds. P/L is realized only when a position closes.
+- One position per selected market; no more than configured maximum; each allocation ≤25% of current balance. No leverage.
+- BUY net P/L in cents = `round(amountCents × (exit / entry − 1)) − round(amountCents × 2 / 10000)`.
+- SELL uses the negative of that price return before the same fees. Total fee is **2 bps round trip**, rounded once to cents. A position can lose at most its fully allocated collateral.
+- Stop/target/max-hold checks execute at the next observed quote. Gaps/slippage relative to the trigger are reflected in the result, not magically filled at a better price. Fees can make a flat trade a loss. Small allocations may produce zero-cent results due to currency rounding.
+- Account and session win/loss statistics come from real simulated settlements. Break-even is not a win or loss. Win rate divides wins by all closed trades.
+- “Today” is UTC realized P/L; current P/L is net unrealized P/L. No arbitrary win-rate target, seeded results, or positive drift is used.
+- Session starting/ending balances are actual account snapshots; session P/L includes **only its trade results**. Other ledger transactions (e.g. a simulated withdrawal) can make balance difference unequal to trade P/L.
 
-Players can **sign in / sign up** (email + password or Google) with their balance, bet ledger, money moves and paid-deposit references **synced to Firestore** — they follow the account across devices and tabs (live updates via `onSnapshot`). Guests keep playing with a local wallet and can upload it to their account on sign-in.
+### Session semantics
 
-- Client setup: `src/lib/firebase.ts` (lazy init — safe under SSR).
-- Wallet sync: `src/lib/firestoreWallet.ts` → `users/{uid}/wallet/current` (+ `users/{uid}/payments/{ref}` for deposit idempotency).
-- Firestore security rules: **`firestore.rules`** — users can only read/write their own data, and only when authenticated.
+Presets: 5/10/30 minutes, 1/2/3/5/10/24 hours; custom 1–10,080 minutes; unlimited. Settings are snapshotted at start. Editing preferences applies to the **next** session, not existing positions.
 
-### Firebase console setup (one-time)
+```text
+ACTIVE ↔ PAUSED
+ACTIVE / PAUSED → STOPPING → STOPPED
+ACTIVE / PAUSED → COMPLETED (deadline; positions settled first)
+```
 
-1. Open the project (`xacheus-339ba`) in [console.firebase.google.com](https://console.firebase.google.com).
-2. **Authentication → Sign-in method** → enable **Email/Password** and **Google**.
-3. **Authentication → Settings → Authorized domains** → add your Vercel domain(s) (and `localhost` for dev).
-4. **Firestore Database → Create database** (production mode is fine — rules below gate access).
-5. Deploy rules:
-   ```bash
-   npm i -g firebase-tools
-   firebase login
-   firebase use xacheus-339ba
-   firebase deploy --only firestore:rules
-   ```
-6. Optional: set `NEXT_PUBLIC_FIREBASE_*` env vars on Vercel to point at a different project (the app ships with `xacheus-339ba` baked in).
+Pause stops entries but continues managing positions and **does not extend expiry**. Resume only works before the original deadline. Stop immediately blocks entries; the worker closes positions at its next quote and records ending balance/completion time. Unlimited has no expiration, but manual stop and risk controls still apply. Session loss control evaluates the entire marked-to-market book and projected realized exits before settlement. If the limit is breached, all positions close at the same observed quote rather than depending on query order. Market gaps and observation latency can exceed the configured loss threshold. It is a safety stop, not an exact guaranteed maximum loss.
 
-## Deploying to Vercel
+### Withdrawals and admin
 
-1. Push this repo to GitHub and **Import** it in the Vercel dashboard (framework: Next.js — auto-detected; `vercel.json` is included).
-2. Add the environment variables (Settings → Environment Variables): `ODDS_API_KEY`, `PAYMENT_GATEWAY_BASE_URL`, `PAYMENT_GATEWAY_API_KEY`, `PAYMENT_GATEWAY_WEBHOOK_SECRET`, optional `STRIPE_SECRET_KEY`. (Firebase vars are optional — defaults are baked in.)
-3. Deploy. Then add the production domain to the Firebase **Authorized domains** list.
-4. CLI alternative: `npm i -g vercel && vercel` (or `vercel --prod`).
+Requests are **simulated and do not transfer real funds**. Submission places a hold, not a balance debit. Cancellation releases the hold. Authorized admin workflow is `Submitted → Under Review → Simulated Completed` (or cancellation), where a simulated completion debits the virtual balance and creates a ledger entry. Finalized requests cannot be processed twice.
 
-> ⚠️ **Never commit `.env.local`** — it is gitignored. It holds the real gateway/Stripe secrets.
+Users see their own requests and can cancel unfinalized ones. Admins can page through registered users and inspect sessions, balances, trades, P/L, logs, and ledger entries. The admin API has **no trade-result or direct balance mutation endpoint**. Request workflow changes generate admin audit events. Firestore rules also deny all direct client writes, including admins.
 
-## Production notes
+Infrastructure owners with Google Cloud Admin permissions necessarily bypass application rules. For a tamper-resistant production audit, separate deployment/IAM privileges, enable Cloud Audit Logs, and export an immutable audit stream; this prototype does not pretend to make a project owner powerless.
 
-- **Ledger**: guests persist to `localStorage`; signed-in users sync to Firestore (`users/{uid}/wallet/current`) with live multi-device updates. For a real-money deployment, move `src/lib/wallet.ts` operations behind `src/db` and credit deposits server-side (webhook or the confirm route) so the ledger is authoritative on the server.
-- **Settlement**: scores are fetched only when you have open bets (request-budget friendly). Auto-settle runs on load and via the **Settle results** button.
-- **The Odds API budget**: the free tier allows 500 requests/month; the header shows your remaining calls (`x-requests-remaining`).
+### Future live trading
 
----
+Keep live execution in a **separate, authorized service/account namespace and credentials boundary**, implementing its own broker adapter and compliance requirements. Do not change a frontend “mode” flag to point simulated positions at a broker. The current `ExecutionAdapter` accepts only `environment: 'SIMULATION'`; there is no installed live implementation. A real market-data adapter can be added without adding live order capability.
 
-© 2026 Xacheus Betting · For development & entertainment only · 18+
+## Tests and checks
+
+```bash
+npm run typecheck
+npm run lint
+npm test                         # Math + server transaction contracts (test double, not Firebase)
+npm run build
+npm run doctor -- --json          # Read-only server/Firestore/worker/feed readiness
+
+# With official Firebase emulators already running:
+FIREBASE_PROJECT_ID=demo-nexus FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 \
+  FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 npm run test:integration
+
+# Web server running on port 3000:
+npx playwright install --with-deps chromium
+npm run test:e2e                  # Desktop/mobile interactions and API access checks
+# Additionally enable account + browser-close trading workflow:
+E2E_FIREBASE_EMULATORS=true npm run test:e2e
+```
+
+Unit tests include an explicitly isolated transaction test double in `tests/support/`. It exercises server commands, execution, rollback/retry behavior, idempotency, account separation, deadline reevaluation, whole-book safety, withdrawals, and ledger reconciliation. It is **never used by the running app or worker**, and does not verify Firestore rules, actual network concurrency, indexes, or Firebase Auth.
+
+Integration tests use transactions against the **official Firestore emulator** and test isolation/rules with `@firebase/rules-unit-testing`. They cover concurrent one-time credit, duplicate commands, duplicate worker ticks, ledger reconciliation, winners and losers, pause/resume deadline preservation, expiry/stop settlement, unlimited sessions, and repeated withdrawal cancellation. They are explicitly skipped without emulator configuration. Never run test fixtures against production.
+
+An **inactive GitHub Actions template** is provided at `docs/ci/verify.yml.example`. It installs Java and the official emulators, runs integration/rules tests, builds the web app, starts its independent worker, and runs the authenticated browser-close/reopen flow. It is intentionally outside `.github/workflows` because the GitHub connection used to submit this PR does not have workflow-write permission. **CI will not run automatically from this template.** An authorized maintainer can enable it by copying the file to `.github/workflows/verify.yml` and committing that change. The workflow has not been run remotely by this session.
+
+### Verification in the build environment
+
+- TypeScript, ESLint, production build and 42 unit tests pass.
+- Desktop/mobile interaction, readiness/offline-state, and unauthenticated API access checks pass (6 browser tests).
+- **Firebase-backed integration/account tests were not executed here**: no server identity is configured, Java is unavailable, and this sandbox cannot download the official emulator binaries. These limitations are not replaced by a fake backend.
+
+## Diagnostics and failure behavior
+
+- **Settings → System connection** displays server identity, Firestore reachability, independent worker heartbeat, and quote freshness. These are observed readiness checks, not decorative indicators. They do not prove that Auth providers or deployed rules are configured correctly; run integration tests for those.
+- `npm run doctor` (or `npm run doctor -- --json`) performs the same read-only readiness check. It exits nonzero when a required service is unavailable and never creates an account or changes funds. No Admin credentials are printed.
+- Offline/cached account snapshots are explicitly marked. Offline clients cannot submit commands; an existing session can still run on the remote worker.
+- Invalid/non-finite quotes, inconsistent reserved funds, cross-session positions, and unsafe monetary values fail closed. They do not trigger a browser balance reset or a guessed trade result.
+- Worker session failures appear on the affected session and in admin events. Repeated identical blocked intervals are deduplicated; successful execution clears the error and records recovery. Stop requests can still be submitted while connected, but safe settlement requires valid server state and fresh quotes.
+- Idempotency receipts are bound to a canonical command fingerprint. Reusing one key for a different payload returns a conflict instead of silently accepting the wrong command.
+
+## Operational scope and limits
+
+- This is a functioning code prototype, **not a production financial service**. Real Firebase deployment and worker hosting remain operator setup tasks.
+- Rate-limit authenticated API requests at the gateway and consider Firebase App Check before public exposure. Set Firebase budget alerts. Scanning/monitoring logs every five seconds can be expensive; define a retention/export policy before scale.
+- Owner views subscribe to latest 100 sessions/events/ledger entries/requests, latest 50 trades with older-trade pagination, and every open position. All records remain persisted. CSV exports the currently loaded, filtered trades; it does not falsely claim to include unloaded history. Admin record inspection is paginated.
+- Recorded prices are synthetic and their chart shows the latest 120 observations, not a fabricated 24-hour market chart. Balance charts show the latest 100 ledger entries and include explicit fund adjustments.
+- State is server-authoritative; offline/stale data must not be treated as current execution. The app never executes trades offline in a browser.
+- Secrets should be managed by hosting identity/secrets infrastructure. Use fictional payment details in the prototype, not sensitive customer account information.
+- The old betting, real-payment/deposit endpoints, fake seeded history and in-memory simulation APIs were removed rather than left alongside this isolated simulator.
