@@ -10,9 +10,9 @@
  * Rules:
  *   - only `settings` is ever reconstructed, and only when the stored value is
  *     absent or unusable;
- *   - the documented `users/{uid}/settings/trading` projection is preferred
- *     when it still holds a complete snapshot (that is where earlier releases
- *     kept preferences), otherwise the documented defaults are used;
+ *   - the documented `{account}/settings/trading` projection is preferred when
+ *     it still holds a complete snapshot (that is where earlier releases kept
+ *     preferences), otherwise the documented defaults are used;
  *   - money, balances, statistics and history are never rewritten — a document
  *     missing those is refused by the invariants instead of being "repaired"
  *     into a balance nobody agreed to;

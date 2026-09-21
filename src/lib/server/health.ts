@@ -6,6 +6,7 @@ import {
 } from "./firebase";
 import { heartbeatFresh } from "./invariants";
 import type { IdentityHint, ServiceHealth } from "../trading/status";
+import { MARKET_DOCUMENT, WORKER_DOCUMENT } from "../trading/paths";
 // Public diagnostics contain readiness booleans and non-secret configuration
 // hints — never credentials, key material, service account emails, raw errors,
 // user records, or system event contents.
@@ -47,8 +48,8 @@ export async function getServiceHealth(): Promise<ServiceHealth> {
   }
   try {
     const [worker, market] = await Promise.all([
-      db().doc("system/worker").get(),
-      db().doc("system/market").get(),
+      db().doc(WORKER_DOCUMENT).get(),
+      db().doc(MARKET_DOCUMENT).get(),
     ]);
     const now = Date.now();
     result.serverTime = now;

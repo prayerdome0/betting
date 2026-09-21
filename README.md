@@ -16,7 +16,7 @@ The provided public client configuration for **`ai-health-d2c5b`** is wired in a
 
 1. In Firebase Console → `ai-health-d2c5b`, enable **Authentication → Email/Password**. Configure a suitable password policy and email enumeration protection. Add the deployed website domain (and development preview domain if needed) to Auth authorized domains. Configure password-reset templates and authorized action URLs.
 2. Create a **Cloud Firestore** database in the desired region. Confirm billing, budgets, and access policies.
-3. Install dependencies with Node **22+**: `npm ci`.
+3. Install dependencies with Node **22.12 or newer** (`package.json` → `engines`, `.nvmrc`; the Admin SDK's dependencies need `require(esm)`): `npm ci`.
 4. Copy `.env.example` to `.env.local`. Its default public config already points to the supplied project.
 5. Give the **server** a Firebase identity, independently for the web server and the worker. This is mandatory: the Firestore rules deny every client write, so the account document created immediately after sign-up can only be written server-side. Pick one:
    - **Serverless / Vercel (recommended there):** create a service account key (Firebase console → Project settings → Service accounts → Generate new private key) and set it as `FIREBASE_SERVICE_ACCOUNT_JSON` (the whole JSON file in one variable), or split it into `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY` (+ optional `FIREBASE_PRIVATE_KEY_ID`). PEM newlines may stay as literal `\n`; they are normalized. Give that account only Firestore data access and Firebase Auth token verification.
@@ -30,6 +30,8 @@ The provided public client configuration for **`ai-health-d2c5b`** is wired in a
    npx firebase deploy --only firestore:rules,firestore:indexes --project ai-health-d2c5b
    ```
    Do not test this app against permissive legacy wallet rules. All client writes to financial and account documents are intentionally denied.
+
+   **If the project also serves another application** (which is the case for `ai-health-d2c5b`), do not deploy `firestore.rules` as a whole: its final catch-all denies everything it does not name and would lock the other application out of its own data. Copy the `match /apps/nexus { … }` block into that project's existing rules and deploy the merged file. Nexus keeps every document it owns under the `apps/nexus` root (see *Data model*), so nothing else in the project has to change — in particular it never reads or writes the project's `users/{uid}` documents.
 7. Start **both** services:
    ```bash
    # Web (terminal/service 1)
@@ -74,6 +76,9 @@ The **worker cannot run on Vercel** (it is a request-only platform). Host `npm r
 | Symptom | Cause and fix |
 | --- | --- |
 | Sign-up succeeds, dashboard stays on "Connecting your persistent account" | `/api/command` cannot act as a trusted server. Read the banner text: `NOT_CONFIGURED` means no server credential, `PROJECT_MISMATCH` means browser and server point at different Firebase projects, `CREDENTIAL_REJECTED` means Google refused the key. `GET /api/health` returns the same diagnostics as JSON. |
+| "Your account could not be created yet … Request failed (HTTP 500)" with an **empty** response body | The server code itself did not start (Next.js answers an exception that escapes a route handler with a bodiless 500). The routes now load their Firebase modules lazily and answer `503` with the real reason instead, and `GET /api/health` reports `SERVER_STARTUP_FAILED` with the same text. The two known causes: a deployment that lost the packages the build externalized (this project builds with `next build --webpack` so the output resolves `firebase-admin` from `node_modules` directly instead of through the `.next/node_modules` symlinks Turbopack emits, which several hosts and artifact uploads drop), and a Node.js runtime older than 22.12 (the Admin SDK's dependencies need `require(esm)`; `package.json` → `engines` and `.nvmrc` pin this). |
+| "A document exists at your Nexus account path, but it is not a Nexus simulation account" | Something other than this application wrote to `apps/nexus/accounts/{uid}` (hand edits, a different tool). Earlier releases stored accounts at `users/{uid}`, where another application sharing the Firebase project could — and did — own the document; that collision is gone because Nexus now owns only the `apps/nexus` namespace. Nothing is repaired automatically for a document without balances: inspect it in the console, and delete it to let the next sign-in create a fresh simulation account. |
+| Every Firestore panel says "Missing or insufficient permissions" | The deployed rules predate the `apps/nexus` namespace, or Nexus's rules were never merged into the project's rules. Redeploy (merged) rules — step 6 above. |
 | `auth/unauthorized-domain` / `auth/admin-restricted-operation` | Firebase console → Authentication: enable Email/Password and add the site domain to Authorized domains. |
 | Browser-level "This page couldn't load" on a `*.vercel.app` **preview** URL | Vercel Deployment Protection (Standard Protection) gates preview deployments behind a Vercel login. Use the production domain, or turn protection off for that deployment. |
 | Blank page after an unexpected client error | Should no longer happen: `src/app/error.tsx` and `src/app/global-error.tsx` render a recoverable message with the error and a reload action. |
@@ -132,32 +137,38 @@ Firestore onSnapshot listeners → dashboard
 - Pure strategies and financial math: `src/lib/trading/strategy.ts`.
 - Authoritative execution: `src/lib/server/engine.ts`, `scripts/worker.ts`.
 - Commands, validation, one-time initialization: `src/lib/server/commands.ts`, `validation.ts`.
-- Authenticated API: `src/app/api/command/route.ts`; admin API: `src/app/api/admin/route.ts`.
+- Authenticated API: `src/app/api/command/route.ts` → `src/lib/server/command-service.ts`; admin API: `src/app/api/admin/route.ts` → `src/lib/server/admin-service.ts`; readiness: `src/app/api/health/route.ts`. The route files stay free of Firebase imports and load their implementation lazily behind `src/lib/server/startup.ts`, so a server module that cannot be loaded on the host is answered as JSON `503` with the reason rather than the bodiless `500` Next.js emits for an escaped exception.
+- Firestore paths: `src/lib/trading/paths.ts` — the only place the `apps/nexus` namespace is spelled out.
 - Security: `firestore.rules`; Admin SDK initialization is server-only, never imported into the client bundle. Server identity resolution and the browser/server project agreement check live in `src/lib/server/firebase.ts` + `src/lib/firebaseProject.ts`.
 - Resilience: `src/app/error.tsx` and `src/app/global-error.tsx` keep an unexpected client exception from turning into a dead page; `useAuth` reports auth/config failures instead of hanging, and `useTrading` retries the one-time account bootstrap with a bounded backoff.
 
 ### Data model
 
+Everything Nexus owns lives under one root document, `apps/nexus` (`src/lib/trading/paths.ts` is the single definition shared by the browser, the server, the worker and the tests). The application never reads or writes anything outside it — not `users/{uid}`, not any other top-level collection — so it can share a Firebase project with another application without either overwriting the other's documents.
+
 ```text
-users/{uid}                           # Profile, currency, account type/status,
-                                      # authoritative cents, stats, settings, current session ID
-users/{uid}/settings/profile
-users/{uid}/settings/trading
-users/{uid}/portfolio/current         # Transactionally updated balance/available projection
-users/{uid}/tradingSessions/{id}       # Deadline, snapshot of strategy, start/end state, results
-users/{uid}/trades/{id}                # OPEN → CLOSED, prices, side, quantity, net P/L,
-                                      # fees, timestamps, decision/reason/version, session ID
-users/{uid}/ledger/{id}               # Every balance delta, resulting balance, reference
-users/{uid}/activity/{id}             # Timestamped scans, analyses, waits, signals, monitoring
-users/{uid}/withdrawals/{id}          # Simulated request workflow, held funds
-users/{uid}/commands/{key}            # Server-only idempotency receipts
-workQueue/{uid}                       # Server-only active-session work pointer
-system/market                        # Shared, explicitly synthetic market feed
-system/worker                        # Heartbeat and operational status
-systemEvents/{id}                    # Admin-only errors and workflow audit
+apps/nexus                                        # Namespace document; holds nothing, never written
+apps/nexus/accounts/{uid}                         # Profile, currency, account type/status,
+                                                  # authoritative cents, stats, settings, current session ID
+apps/nexus/accounts/{uid}/settings/profile
+apps/nexus/accounts/{uid}/settings/trading
+apps/nexus/accounts/{uid}/portfolio/current       # Transactionally updated balance/available projection
+apps/nexus/accounts/{uid}/tradingSessions/{id}    # Deadline, snapshot of strategy, start/end state, results
+apps/nexus/accounts/{uid}/trades/{id}             # OPEN → CLOSED, prices, side, quantity, net P/L,
+                                                  # fees, timestamps, decision/reason/version, session ID
+apps/nexus/accounts/{uid}/ledger/{id}             # Every balance delta, resulting balance, reference
+apps/nexus/accounts/{uid}/activity/{id}           # Timestamped scans, analyses, waits, signals, monitoring
+apps/nexus/accounts/{uid}/withdrawals/{id}        # Simulated request workflow, held funds
+apps/nexus/accounts/{uid}/commands/{key}          # Server-only idempotency receipts
+apps/nexus/workQueue/{uid}                        # Server-only active-session work pointer
+apps/nexus/system/market                          # Shared, explicitly synthetic market feed
+apps/nexus/system/worker                          # Heartbeat and operational status
+apps/nexus/systemEvents/{id}                      # Admin-only errors and workflow audit
 ```
 
-Documents written by an earlier release are first-class reads. Everything the browser renders passes through one boundary (`src/lib/trading/documents.ts`) that keeps valid fields, fills a missing `settings` object from the documented defaults, and refuses to display money, positions or prices the document does not contain. The server then performs the durable repair inside the transaction that handled the command: `settings` is recovered from the `users/{uid}/settings/trading` projection when that legacy copy is still complete (otherwise from the documented defaults), the change is recorded in the activity timeline, and the command result tells the user. A document that cannot be reconciled — a `users/{uid}` without balances, or another application's fields — produces an explicit message in the workspace rather than a crash or an invented balance. The worker applies the same repair to a session whose frozen settings snapshot is missing, so such a session resumes instead of failing every tick.
+Why the namespace: earlier releases used `users/{uid}` as the account document. In a project that already serves another application, that path is that application's profile — a Nexus sign-in with the same uid found a document that was not a simulation account, the browser correctly refused to show it as a balance, the server correctly refused to create or overwrite it, and the account could never be initialized. Merging the two schemas into one document was never an option: each application replaces the whole document on write. Accounts created by builds before this change (at `users/{uid}`) are no longer read; they held simulated balances only. If one must be kept, copy the account document and its subcollections to `apps/nexus/accounts/{uid}` with the Admin SDK before the user signs in again.
+
+Documents written by an earlier release are first-class reads. Everything the browser renders passes through one boundary (`src/lib/trading/documents.ts`) that keeps valid fields, fills a missing `settings` object from the documented defaults, and refuses to display money, positions or prices the document does not contain. The server then performs the durable repair inside the transaction that handled the command: `settings` is recovered from the account's `settings/trading` projection when that legacy copy is still complete (otherwise from the documented defaults), the change is recorded in the activity timeline, and the command result tells the user. A document that cannot be reconciled — an account document without balances, or fields that are not this application's — produces an explicit message in the workspace rather than a crash or an invented balance. The worker applies the same repair to a session whose frozen settings snapshot is missing, so such a session resumes instead of failing every tick.
 
 Timestamps are server-generated **Unix milliseconds** (not client clocks). Transaction callbacks reevaluate the server clock on retry, so contention cannot preserve an obsolete deadline or authorize stale quotes. Money uses integer cents. Per-account monotonic sequences order ledger entries and activity even when several events share the same millisecond. Account creation is transactional: racing first logins cannot issue two welcome credits. Profile, portfolio, settings projections and balance ledger commit together. No account data is stored only in React or localStorage; localStorage contains only the visual theme. Firebase Auth uses its supported local persistence, not hand-written password storage.
 
@@ -226,9 +237,11 @@ An **inactive GitHub Actions template** is provided at `docs/ci/verify.yml.examp
 
 ### Verification in the build environment
 
-- TypeScript, ESLint, production build and 85 unit tests pass.
+- TypeScript, ESLint, production build (`next build --webpack`) and 92 unit tests pass.
+- **The empty-bodied HTTP 500 is reproduced and covered.** Against a production build, removing the `.next/node_modules` symlink Turbopack leaves for the externalized Admin SDK made every API route answer `500` with no body — exactly the reported "Request failed (HTTP 500)". With the startup guard, the same fault answers `503` naming the missing package on `/api/command` and `/api/admin`, and `/api/health` reports `SERVER_STARTUP_FAILED`; `tests/startup.test.ts` pins the wording and the structural rule (route files must not import the Firebase server modules statically). The webpack build additionally removes the symlink dependency altogether.
+- **A foreign `users/{uid}` document is covered on the server** (`tests/server.test.ts`): with another application's profile in place, `initialize` creates the simulation account under `apps/nexus`, every Nexus write stays inside that namespace, and the foreign document is byte-for-byte untouched. The rules test asserts that Nexus's rules grant nobody anything on `users/{uid}`.
 - **The client authentication flow is covered end to end** by a jsdom harness (`tests/authflow.dom.test.ts`, support in `tests/support/dom-flow.ts`) that renders the *real* components against a fake Firebase Auth/Firestore transport: registration → account creation → dashboard, sign-in, reload with a persisted session, sign-out → sign-in again, an auth failure inside the dialog, denied Firestore reads, and a 503/HTML/object-shaped `/api/command` failure — the exact conditions that used to strand a new user after sign-up.
-- **Legacy and foreign Firestore documents are covered** by `tests/legacy.dom.test.ts`: an account stored without `settings`, a session snapshot without `settings`, a `users/{uid}` document belonging to another application, and trade/activity/ledger rows without financial fields all render the workspace (the reported `Cannot read properties of undefined (reading 'markets')` crash is a test case), while no balance is invented for a document that has none.
+- **Legacy and foreign Firestore documents are covered** by `tests/legacy.dom.test.ts`: an account stored without `settings`, a session snapshot without `settings`, an account document that is not this application's, and trade/activity/ledger rows without financial fields all render the workspace (the reported `Cannot read properties of undefined (reading 'markets')` crash is a test case), while no balance is invented for a document that has none.
 - **Server identity resolution is covered** by `tests/identity.test.ts`: service-account JSON in one env var, split fields, literal `\n` PEM escaping, malformed JSON, project mismatch (credential vs. `FIREBASE_PROJECT_ID` vs. `NEXT_PUBLIC_FIREBASE_PROJECT_ID`), emulator isolation, and the guarantee that a missing server credential produces a 503 about the server rather than a 401 blaming the user.
 - Desktop/mobile interaction, readiness/offline-state, and unauthenticated API access checks pass (6 browser tests).
 - **Firebase-backed integration/account tests were not executed here**: no server identity is configured, Java is unavailable, and this sandbox cannot download the official emulator binaries. These limitations are not replaced by a fake backend.
@@ -237,6 +250,7 @@ An **inactive GitHub Actions template** is provided at `docs/ci/verify.yml.examp
 
 - **Settings → System connection** displays server identity, Firestore reachability, independent worker heartbeat, and quote freshness. These are observed readiness checks, not decorative indicators. They do not prove that Auth providers or deployed rules are configured correctly; run integration tests for those.
 - `npm run doctor` (or `npm run doctor -- --json`) performs the same read-only readiness check. It exits nonzero when a required service is unavailable and never creates an account or changes funds. No Admin credentials are printed.
+- `GET /api/health` answers even when the server's own Firebase modules cannot be loaded on the host: `status: SERVER_STARTUP_FAILED`, HTTP 503, and a `message` naming the module that failed plus the likely cause (missing package after deployment, Node.js older than 22.12). `/api/command` and `/api/admin` answer the same text as a JSON `503` in that state, so the browser never has to fall back to "Request failed (HTTP 500)" for a fault on the server.
 - Offline/cached account snapshots are explicitly marked. Offline clients cannot submit commands; an existing session can still run on the remote worker.
 - Invalid/non-finite quotes, inconsistent reserved funds, cross-session positions, and unsafe monetary values fail closed. They do not trigger a browser balance reset or a guessed trade result.
 - Stored documents that predate the current shape are repaired, not ignored: a missing `settings` object is restored (from the saved projection when possible) inside the same transaction, audited in the activity timeline, and disclosed in the command result/banner. A document that cannot be reconciled is explained in the workspace — the reason is a data problem with a clear message, not the generic "Firebase server unavailable" outage text.

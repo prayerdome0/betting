@@ -78,6 +78,14 @@ export default function SystemStatus({
           <details className="setup-instructions">
             <summary>Deployment checklist</summary>
             <ol>
+              {health.status === "SERVER_STARTUP_FAILED" && (
+                <li>
+                  The server code did not start on this host, so none of the
+                  checks below could run. Read the reason above: redeploy with{" "}
+                  <code>node_modules</code> intact and the build output
+                  unchanged, on Node.js 22.12 or newer.
+                </li>
+              )}
               <li>
                 Enable Email/Password authentication and create Firestore in
                 Firebase Console.

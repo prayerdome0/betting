@@ -4,6 +4,11 @@ import { connectionLabel } from "../src/lib/trading/status";
 import { heartbeatFresh } from "../src/lib/server/invariants";
 import { recordSessionFailure } from "../src/lib/server/worker-errors";
 import { TransactionStore } from "./support/transaction-store";
+import {
+  accountPath,
+  SYSTEM_EVENTS_COLLECTION,
+} from "../src/lib/trading/paths";
+const ALICE = accountPath("alice");
 test("cached or offline snapshots are never labelled as connected", () => {
   assert.match(
     connectionLabel({
@@ -67,8 +72,8 @@ test("worker freshness does not accept NaN, infinite, missing, future, or old ti
 });
 test("session failures are visible, deduplicated, and never change trades or balances", async () => {
   const store = new TransactionStore();
-  store.seed("users/alice", { activeSessionId: "s1", balanceCents: 50000 });
-  store.seed("users/alice/tradingSessions/s1", { id: "s1", status: "ACTIVE" });
+  store.seed(ALICE, { activeSessionId: "s1", balanceCents: 50000 });
+  store.seed(`${ALICE}/tradingSessions/s1`, { id: "s1", status: "ACTIVE" });
   await recordSessionFailure(
     "alice",
     "s1",
@@ -83,26 +88,23 @@ test("session failures are visible, deduplicated, and never change trades or bal
     2000,
     store.firestore,
   );
-  assert.equal(store.list("systemEvents").length, 1);
-  assert.equal(
-    store.read<{ balanceCents: number }>("users/alice").balanceCents,
-    50000,
-  );
+  assert.equal(store.list(SYSTEM_EVENTS_COLLECTION).length, 1);
+  assert.equal(store.read<{ balanceCents: number }>(ALICE).balanceCents, 50000);
   const session = store.read<{
     engineError: { message: string; occurredAt: number };
-  }>("users/alice/tradingSessions/s1");
+  }>(`${ALICE}/tradingSessions/s1`);
   assert.equal(session.engineError.occurredAt, 1000);
   assert.ok(!session.engineError.message.includes("Internal failure"));
-  assert.equal(store.list("users/alice/trades").length, 0);
+  assert.equal(store.list(`${ALICE}/trades`).length, 0);
 });
 test("a delayed error from an old job cannot mark the new session as broken", async () => {
   const store = new TransactionStore();
-  store.seed("users/alice", { activeSessionId: "s2" });
-  store.seed("users/alice/tradingSessions/s1", {
+  store.seed(ALICE, { activeSessionId: "s2" });
+  store.seed(`${ALICE}/tradingSessions/s1`, {
     id: "s1",
     status: "COMPLETED",
   });
-  store.seed("users/alice/tradingSessions/s2", { id: "s2", status: "ACTIVE" });
+  store.seed(`${ALICE}/tradingSessions/s2`, { id: "s2", status: "ACTIVE" });
   const before = store.dump();
   await recordSessionFailure(
     "alice",

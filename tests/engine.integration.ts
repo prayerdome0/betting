@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { db } from "../src/lib/server/firebase";
 import { executeCommand } from "../src/lib/server/commands";
+import { accountPath } from "../src/lib/trading/paths";
 import { processSession } from "../src/lib/server/engine";
 import {
   DEFAULT_SETTINGS,
@@ -42,7 +43,7 @@ test(
       uid: `test-${randomUUID()}`,
       email: "integration@example.test",
     };
-    const user = db().doc(`users/${identity.uid}`);
+    const user = db().doc(accountPath(identity.uid));
     let now = Date.now();
     const call = (
       cmd: Parameters<typeof executeCommand>[1],

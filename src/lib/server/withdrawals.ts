@@ -4,6 +4,7 @@ import { ApiError, db } from "./firebase";
 import { event, ledger, saveAccount } from "./commands";
 import { assertAccount, readClock, type Clock } from "./invariants";
 import type { Account, Withdrawal } from "../trading/types";
+import { accountPath, SYSTEM_EVENTS_COLLECTION } from "../trading/paths";
 export const withdrawalReviewSchema = z
   .object({
     uid: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -20,7 +21,7 @@ export async function reviewWithdrawal(
   if (actor.admin !== true)
     throw new ApiError(403, "Administrator authorization is required.");
   const body = withdrawalReviewSchema.parse(input);
-  const user = store.doc(`users/${body.uid}`);
+  const user = store.doc(accountPath(body.uid));
   const ref = user.collection("withdrawals").doc(body.id);
   await store.runTransaction(async (tx) => {
     const [a, w] = await Promise.all([tx.get(user), tx.get(ref)]);
@@ -75,7 +76,7 @@ export async function reviewWithdrawal(
       account,
     );
     saveAccount(tx, user, account);
-    tx.set(store.collection("systemEvents").doc(), {
+    tx.set(store.collection(SYSTEM_EVENTS_COLLECTION).doc(), {
       timestamp: now,
       kind: "ADMIN_AUDIT",
       actorId: actor.uid,

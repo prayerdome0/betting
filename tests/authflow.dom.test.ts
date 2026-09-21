@@ -23,9 +23,11 @@ import {
   setDocument,
   textContent,
 } from "./support/dom-flow";
+import { accountPath } from "../src/lib/trading/paths";
 
 const EMAIL = "trader@example.test";
 const UID = `uid-${EMAIL.replace(/\W/g, "")}`;
+const ACCOUNT = accountPath(UID);
 
 function accountFixture(email = EMAIL, uid = UID, balanceCents = 1000) {
   const now = Date.now();
@@ -71,10 +73,10 @@ function healthyBackend() {
     if (action === "initialize") {
       // Like the real server: initialization is idempotent and never overwrites
       // an account that already exists.
-      if (hasDocument(`users/${UID}`))
+      if (hasDocument(ACCOUNT))
         return { status: 200, body: { message: "Account is ready." } };
-      setDocument(`users/${UID}`, accountFixture());
-      setCollection(`users/${UID}/ledger`, [
+      setDocument(ACCOUNT, accountFixture());
+      setCollection(`${ACCOUNT}/ledger`, [
         {
           id: "l1",
           sequence: 1,
@@ -86,7 +88,7 @@ function healthyBackend() {
           userId: UID,
         },
       ]);
-      setCollection(`users/${UID}/activity`, [
+      setCollection(`${ACCOUNT}/activity`, [
         {
           id: "a1",
           sequence: 1,
@@ -237,7 +239,7 @@ test("existing user can sign in and reach the dashboard", async () => {
 
 test("a persisted session restores the dashboard on reload", async () => {
   seedPersistedUser(EMAIL);
-  setDocument(`users/${UID}`, accountFixture(EMAIL, UID, 50000));
+  setDocument(ACCOUNT, accountFixture(EMAIL, UID, 50000));
   await mount();
   await act(async () => wait(60));
   assert.match(textContent(), /\$500\.00/, "refresh after login restores the account");
@@ -245,7 +247,7 @@ test("a persisted session restores the dashboard on reload", async () => {
 
 test("signing out returns to the guest workspace and signing in again works", async () => {
   seedPersistedUser(EMAIL);
-  setDocument(`users/${UID}`, accountFixture());
+  setDocument(ACCOUNT, accountFixture());
   await mount();
   await act(async () => wait(40));
   assert.match(textContent(), /\$10\.00/);
@@ -370,6 +372,28 @@ test("platform HTML error pages are reported readably", async () => {
   assert.match(text, /FUNCTION_INVOCATION_TIMEOUT/);
   assert.doesNotMatch(text, /Unexpected token/);
   assert.doesNotMatch(text, /\[object Object\]/);
+  assert.match(text, /Trading overview/, "the workspace keeps rendering");
+});
+
+test("a bodiless HTTP 500 is described as a server fault with a pointer to the reason", async () => {
+  // Reported: "Your account could not be created yet — the server rejected the
+  // request. Request failed (HTTP 500)." This is what Next.js sends when the
+  // route's own module graph fails to load: status 500, no body at all.
+  http.command = async () => ({ status: 500, body: null, raw: "" });
+
+  await mount();
+  await click(buttonByName("Open simulation account"));
+  await typeInto(dialogInput("Email address"), EMAIL);
+  await typeInto(dialogInput("Password"), "SimulatedPass123!");
+  await click(dialogButton("Create simulation account"));
+  await act(async () => wait(60));
+
+  const text = textContent();
+  assert.match(text, /could not be created yet/);
+  assert.match(text, /failed before it could answer \(HTTP 500\)/);
+  assert.match(text, /\/api\/health/, "the operator is told where to look");
+  assert.doesNotMatch(text, /rejected the request/, "a crash is not a refusal");
+  assert.doesNotMatch(text, /Request failed \(HTTP 500\)\./);
   assert.match(text, /Trading overview/, "the workspace keeps rendering");
 });
 

@@ -3,6 +3,10 @@ import { updateFeed, TICK_MS } from "../src/lib/server/market";
 import { processSession } from "../src/lib/server/engine";
 import { recordSessionFailure } from "../src/lib/server/worker-errors";
 import { FieldPath } from "firebase-admin/firestore";
+import {
+  WORK_QUEUE_COLLECTION,
+  WORKER_DOCUMENT,
+} from "../src/lib/trading/paths";
 let running = true;
 process.on("SIGTERM", () => {
   running = false;
@@ -19,7 +23,7 @@ async function tick() {
   let errors = 0;
   do {
     let pageQuery = db()
-      .collection("workQueue")
+      .collection(WORK_QUEUE_COLLECTION)
       .orderBy(FieldPath.documentId())
       .limit(100);
     if (cursor) pageQuery = pageQuery.startAfter(cursor);
@@ -43,7 +47,7 @@ async function tick() {
     }
     cursor = page.docs[page.docs.length - 1].id;
   } while (running);
-  await db().doc("system/worker").set({
+  await db().doc(WORKER_DOCUMENT).set({
     heartbeatAt: Date.now(),
     sessionsProcessed: count,
     sessionErrors: errors,
